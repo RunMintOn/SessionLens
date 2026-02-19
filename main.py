@@ -31,14 +31,23 @@ def truncate_title(title: str, max_length: int = 30) -> str:
 
 
 def format_label(title: str, source: str, is_favorite: bool, terminal_width: int) -> Text:
-    left_padding = 0
+    min_width = 25
+    if terminal_width < min_width:
+        terminal_width = min_width
+    
     fav_size = 2
     source_size = 8
     right_padding = 2
-    available = terminal_width - left_padding - fav_size - source_size - right_padding
-    available = max(available, 20)
+    scrollbar_width = 1
+    
+    available = terminal_width - fav_size - source_size - right_padding - scrollbar_width - 4
+    
+    if available < 8:
+        available = 8
+    
     if len(title) > available:
         title = title[:available-3] + "..."
+    
     padded_title = title.ljust(available)
     fav_marker = "★ " if is_favorite else "· "
     color = COLORS.get(source.lower(), "#FFFFFF")
@@ -114,6 +123,7 @@ class SessionManagerApp(App):
         self.favorite_ids: Dict[str, str] = {}  # session_id -> source
         self.projects: Dict[str, Dict] = {}
         self.selected_session: Optional[Session] = None
+        self._resize_timer = None  # Debounce timer for resize
     
     def compose(self):
         """Compose the UI layout"""
@@ -209,8 +219,10 @@ class SessionManagerApp(App):
         tree = self.query_one("#sessions-tree")
         tree.clear()
         
-        panel_width = self.query_one(".left-panel").size.width
-        terminal_width = max(panel_width - 2, 40)
+        terminal_width = tree.size.width
+        
+        if terminal_width < 30:
+            terminal_width = 40
         
         # 禁用根节点展开（隐藏顶层空节点）
         tree.root.allow_expand = False
@@ -304,7 +316,9 @@ class SessionManagerApp(App):
         self.update_favorites()
     
     def on_resize(self, event: Resize) -> None:
-        self._refresh_tree_display()
+        if self._resize_timer:
+            self._resize_timer.stop()
+        self._resize_timer = self.set_timer(0.2, self._refresh_tree_display)
     
     def action_toggle_favorite(self) -> None:
         """Toggle favorite for selected session"""
