@@ -9,11 +9,18 @@ from textual.widgets import Tree, Button, Header, Footer, Static, Label
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.events import Click
+from rich.text import Text
 
 # Import our modules
 from scanner import scan_all
 from config import Config
 from models import Session
+
+COLORS = {
+    "opencode": "#86EFAC",
+    "qwen": "#93C5FD",
+    "claude": "#FDBA74",
+}
 
 
 def truncate_title(title: str, max_length: int = 30) -> str:
@@ -21,6 +28,23 @@ def truncate_title(title: str, max_length: int = 30) -> str:
     if len(title) <= max_length:
         return title
     return title[:max_length-3] + "..."
+
+
+def format_label(title: str, source: str, is_favorite: bool, terminal_width: int) -> Text:
+    left_padding = 4
+    fav_size = 2
+    source_size = 8
+    right_padding = 2
+    available = terminal_width - left_padding - fav_size - source_size - right_padding
+    available = max(available, 20)
+    if len(title) > available:
+        title = title[:available-3] + "..."
+    padded_title = title.ljust(available)
+    fav_marker = "★ " if is_favorite else "· "
+    color = COLORS.get(source.lower(), "#FFFFFF")
+    label = Text(fav_marker + padded_title + " ")
+    label.append(source.lower(), style=color)
+    return label
 
 
 def simplify_path(path: str) -> str:
@@ -185,12 +209,8 @@ class SessionManagerApp(App):
         tree = self.query_one("#sessions-tree")
         tree.clear()
         
-        # 颜色映射
-        COLORS = {
-            "opencode": "#86EFAC",  # 浅绿色
-            "qwen": "#93C5FD",      # 浅蓝色
-            "claude": "#FDBA74",   # 浅橙色
-        }
+        panel_width = self.query_one(".left-panel").size.width
+        terminal_width = max(panel_width - 2, 40)
         
         # 禁用根节点展开（隐藏顶层空节点）
         tree.root.allow_expand = False
@@ -208,11 +228,7 @@ class SessionManagerApp(App):
             project_node = tree.root.add(project_data['name'])
             project_node.allow_expand = True  # 项目节点可展开
             for session in project_sessions:
-                fav_marker = "★ " if session.id in self.favorite_ids else "· "
-                title = truncate_title(session.title, max_length=35)
-                # 去掉 [] 用小字颜色
-                source = session.source_tool.lower()
-                label = f"{fav_marker}{title} {source}"
+                label = format_label(session.title, session.source_tool, session.id in self.favorite_ids, terminal_width)
                 node = project_node.add(label)
                 node.allow_expand = False  # 禁用会话展开
                 node.data = session
