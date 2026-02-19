@@ -8,7 +8,7 @@ from textual.app import App
 from textual.widgets import Tree, Button, Header, Footer, Static, Label
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.events import Click
+from textual.events import Click, Resize
 from rich.text import Text
 
 # Import our modules
@@ -31,7 +31,7 @@ def truncate_title(title: str, max_length: int = 30) -> str:
 
 
 def format_label(title: str, source: str, is_favorite: bool, terminal_width: int) -> Text:
-    left_padding = 4
+    left_padding = 0
     fav_size = 2
     source_size = 8
     right_padding = 2
@@ -302,6 +302,9 @@ class SessionManagerApp(App):
         """Refresh button action"""
         self.refresh_sessions()
         self.update_favorites()
+    
+    def on_resize(self, event: Resize) -> None:
+        self._refresh_tree_display()
     
     def action_toggle_favorite(self) -> None:
         """Toggle favorite for selected session"""
