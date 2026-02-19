@@ -108,7 +108,7 @@ class SessionManagerApp(App):
                     yield Button("OpenCode", id="filter-opencode")
                     yield Button("Qwen", id="filter-qwen")
                 
-                yield Tree("会话管理器", id="sessions-tree", classes="sessions-tree")
+                yield Tree("", id="sessions-tree", classes="sessions-tree")
             
             # Right panel - Favorites
             with Vertical(classes="panel right-panel"):
@@ -185,6 +185,16 @@ class SessionManagerApp(App):
         tree = self.query_one("#sessions-tree")
         tree.clear()
         
+        # 颜色映射
+        COLORS = {
+            "opencode": "#86EFAC",  # 浅绿色
+            "qwen": "#93C5FD",      # 浅蓝色
+            "claude": "#FDBA74",   # 浅橙色
+        }
+        
+        # 禁用根节点展开（隐藏顶层空节点）
+        tree.root.allow_expand = False
+        
         for project_data in self.projects.values():
             # Filter sessions for this project
             project_sessions = [
@@ -193,12 +203,18 @@ class SessionManagerApp(App):
             ]
             if not project_sessions:
                 continue
-                
+            
+            # 直接添加到 tree.root，不加顶层节点
             project_node = tree.root.add(project_data['name'])
+            project_node.allow_expand = True  # 项目节点可展开
             for session in project_sessions:
-                fav_marker = "★" if session.id in self.favorite_ids else "·"
-                label = f"{fav_marker} {truncate_title(session.title)} [{session.source_tool}]"
+                fav_marker = "★ " if session.id in self.favorite_ids else "· "
+                title = truncate_title(session.title, max_length=35)
+                # 去掉 [] 用小字颜色
+                source = session.source_tool.lower()
+                label = f"{fav_marker}{title} {source}"
                 node = project_node.add(label)
+                node.allow_expand = False  # 禁用会话展开
                 node.data = session
         
         tree.root.expand_all()
