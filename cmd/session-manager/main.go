@@ -197,15 +197,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(visibleSessions)-1 {
 				m.cursor++
 			}
+		case tea.KeyRunes:
+			if len(msg.Runes) == 1 && msg.Runes[0] == '/' {
+				m.searching = true
+				m.query = ""
+				m.cursor = 0
+				return m, nil
+			}
 		}
 
 		switch msg.String() {
 		case "q":
 			return m, tea.Quit
-		case "/":
-			m.searching = true
-			m.query = ""
-			m.cursor = 0
 		case "enter":
 			visibleSessions := m.getVisibleSessions()
 			if m.cursor < len(visibleSessions) {
