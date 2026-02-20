@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"agent-session-manager/session"
 )
 
 // Source colors from the task requirements
@@ -71,15 +74,9 @@ var (
 				Foreground(lipgloss.Color("#FFFFFF"))
 )
 
-type Session struct {
-	id       string
-	source   string
-	messages int
-}
-
 type model struct {
 	cursor    int
-	sessions  []Session
+	sessions  []session.Session
 	searching bool
 	query     string
 	width     int
@@ -125,29 +122,54 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Normal mode
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			return m, tea.Quit
+		case tea.KeyUp:
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case tea.KeyDown:
+			if m.cursor < len(m.sessions)-1 {
+				m.cursor++
+			}
+		}
+
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "q":
 			return m, tea.Quit
 		case "/":
 			m.searching = true
 			m.query = ""
 			m.cursor = 0
 		case "enter":
-			// Attach to the selected tmux session
 			if m.cursor < len(m.sessions) {
-				sessionID := m.sessions[m.cursor].id
-				cmd := exec.Command("tmux", "attach-session", "-t", sessionID)
-				cmd.Stdin = os.Stdin
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-				cmd.Run()
-				return m, tea.Quit
+				sess := m.sessions[m.cursor]
+				sessionID := sess.ID
+				tool := string(sess.SourceTool)
+
+				var restoreCmd *exec.Cmd
+				switch tool {
+				case "Claude":
+					restoreCmd = exec.Command("claude", "-r", sessionID)
+				case "OpenCode":
+					restoreCmd = exec.Command("opencode", "-s", sessionID)
+				case "Qwen":
+					restoreCmd = exec.Command("qwen", "-r", sessionID)
+				default:
+					return m, nil
+				}
+
+				if err := restoreCmd.Start(); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to launch %s: %v\n", tool, err)
+				}
+				return m, nil
 			}
-		case "up", "k":
+		case "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case "down", "j":
+		case "j":
 			if m.cursor < len(m.sessions)-1 {
 				m.cursor++
 			}
@@ -160,10 +182,10 @@ func (m model) View() string {
 	filteredSessions := m.sessions
 	if m.query != "" {
 		queryLower := strings.ToLower(m.query)
-		var filtered []Session
+		var filtered []session.Session
 		for _, s := range m.sessions {
-			if strings.Contains(strings.ToLower(s.id), queryLower) ||
-				strings.Contains(strings.ToLower(s.source), queryLower) {
+			if strings.Contains(strings.ToLower(s.ID), queryLower) ||
+				strings.Contains(strings.ToLower(string(s.SourceTool)), queryLower) {
 				filtered = append(filtered, s)
 			}
 		}
@@ -212,7 +234,7 @@ func (m model) View() string {
 		displaySessions = filteredSessions[:contentHeight-2]
 	}
 
-	for i, session := range displaySessions {
+	for i, sess := range displaySessions {
 		cursor := "  "
 		style := itemStyle
 		if m.cursor == i {
@@ -220,8 +242,9 @@ func (m model) View() string {
 			style = selectedStyle.Copy().Background(selectedColor)
 		}
 
+		sourceStr := string(sess.SourceTool)
 		var sourceStyle lipgloss.Style
-		switch session.source {
+		switch sourceStr {
 		case "OpenCode":
 			sourceStyle = lipgloss.NewStyle().Foreground(openCodeColor)
 		case "Claude":
@@ -232,11 +255,11 @@ func (m model) View() string {
 			sourceStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#AAAAAA"))
 		}
 
-		line := fmt.Sprintf("%s%s  %s  (%d msgs)",
+		line := fmt.Sprintf("%s%s  %s  (%s)",
 			cursor,
-			session.id,
-			sourceStyle.Render(session.source),
-			session.messages,
+			sess.ID,
+			sourceStyle.Render(sourceStr),
+			sess.Title,
 		)
 		s += style.Render(line) + "\n"
 	}
@@ -257,17 +280,44 @@ func (m model) View() string {
 }
 
 func main() {
+	var allSessions []session.Session
+
+	scanners := []struct {
+		name    string
+		scanner session.Scanner
+	}{
+		{"OpenCode", session.NewOpenCodeScanner()},
+		{"Claude", session.NewClaudeScanner()},
+		{"Qwen", session.NewQwenScanner()},
+	}
+
+	for _, s := range scanners {
+		sessions, err := s.scanner.Scan("")
+		if err != nil {
+			continue
+		}
+		allSessions = append(allSessions, sessions...)
+	}
+
+	seen := make(map[string]bool)
+	var uniqueSessions []session.Session
+	for _, sess := range allSessions {
+		key := fmt.Sprintf("%s|%s", sess.ID, sess.SourceTool)
+		if !seen[key] {
+			seen[key] = true
+			uniqueSessions = append(uniqueSessions, sess)
+		}
+	}
+
+	sort.Slice(uniqueSessions, func(i, j int) bool {
+		return uniqueSessions[i].LastUpdated > uniqueSessions[j].LastUpdated
+	})
+
 	m := model{
-		cursor: 0,
-		sessions: []Session{
-			{"ses_001", "OpenCode", 45},
-			{"ses_002", "Claude", 23},
-			{"ses_003", "Qwen", 12},
-			{"ses_004", "OpenCode", 8},
-			{"ses_005", "Claude", 31},
-		},
-		width:  0,
-		height: 0,
+		cursor:   0,
+		sessions: uniqueSessions,
+		width:    0,
+		height:   0,
 	}
 
 	p := tea.NewProgram(m)

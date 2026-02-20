@@ -1,0 +1,4 @@
+2026-02-20 17:58:17 - Fixed keyboard input handling in cmd/session-manager/main.go
+- Changed arrow key handling from msg.String() to msg.Type (tea.KeyUp/tea.KeyDown)
+- Kept j/k as string fallback for vim-style navigation
+- Build verification: go build ./cmd/session-manager PASSED

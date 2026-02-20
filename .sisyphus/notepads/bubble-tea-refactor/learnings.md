@@ -332,3 +332,30 @@ Added explicit branch in `Scan()`:
 ### Verification
 - `go build ./cmd/session-manager` - PASSED
 - No lsp_diagnostics errors
+
+---
+
+## Task: Fix Hardcoded Mock Sessions → Real Scanner Data
+
+### Modified Files
+- `cmd/session-manager/main.go` - Replaced hardcoded mock sessions with real scanner integration
+
+### Changes Made
+1. **Import**: Added `agent-session-manager/session` package
+2. **Model Update**: Changed `sessions []Session` to `sessions []session.Session`
+3. **Data Source**: Replaced hardcoded mock data with real scan:
+   - Created scanners via `NewOpenCodeScanner()`, `NewClaudeScanner()`, `NewQwenScanner()`
+   - Called `Scan("")` on each to get all sessions
+   - Deduplicated by `ID + SourceTool` key
+   - Sorted by `LastUpdated` descending
+4. **View Update**: Changed display from `(id, source, msg count)` to `(ID, SourceTool, Title)`
+
+### Design Decision
+- Did NOT modify scanner files (scan_all is unexported)
+- Directly instantiated scanners using exported factory functions
+- Mirrors scan_all() logic: aggregate → deduplicate → sort
+
+### Verification
+- `go build ./cmd/session-manager` - PASSED
+- `go test ./session/...` - PASSED
+- Grep confirmed no `ses_001|ses_002|ses_003` literals remain
