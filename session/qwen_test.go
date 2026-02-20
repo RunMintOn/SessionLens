@@ -169,8 +169,32 @@ func TestQwenScanner_TitleTruncation(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("expected 1 session, got %d", len(sessions))
 	}
-	if len(sessions[0].Title) != 100 {
-		t.Errorf("expected title length 100, got %d", len(sessions[0].Title))
+	if len([]rune(sessions[0].Title)) != NormalizedTitleWidth {
+		t.Errorf("expected title rune length %d, got %d", NormalizedTitleWidth, len([]rune(sessions[0].Title)))
+	}
+}
+
+func TestQwenScanner_UsesCwdAsProjectPath(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	projDir := filepath.Join(tmpDir, "-testproject")
+	chatsDir := filepath.Join(projDir, "chats")
+	os.MkdirAll(chatsDir, 0755)
+
+	jsonlContent := `{"type":"user","cwd":"/home/lee/11MyProjrct/projectA","message":{"parts":[{"text":"hello"}]},"timestamp":"2026-02-18T17:16:42.012Z"}
+`
+	os.WriteFile(filepath.Join(chatsDir, "test.jsonl"), []byte(jsonlContent), 0644)
+
+	scanner := &QwenScanner{BasePath: tmpDir}
+	sessions, err := scanner.Scan("testproject")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].ProjectPath != "/home/lee/11MyProjrct/projectA" {
+		t.Fatalf("expected cwd project path, got '%s'", sessions[0].ProjectPath)
 	}
 }
 

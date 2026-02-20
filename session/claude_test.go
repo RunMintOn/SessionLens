@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -93,7 +94,7 @@ func TestClaudeScanner_MalformedJsonLine(t *testing.T) {
 	}
 }
 
-func TestClaudeScanner_FallbackTitle(t *testing.T) {
+func TestClaudeScanner_SkipSessionWithoutUserOrCommand(t *testing.T) {
 	tmpDir := t.TempDir()
 	projDir := filepath.Join(tmpDir, "test-project")
 	os.MkdirAll(projDir, 0755)
@@ -110,12 +111,8 @@ func TestClaudeScanner_FallbackTitle(t *testing.T) {
 		t.Fatalf("Scan failed: %v", err)
 	}
 
-	if len(sessions) != 1 {
-		t.Fatalf("Expected 1 session, got %d", len(sessions))
-	}
-
-	if sessions[0].Title != "fallback-session" {
-		t.Errorf("Expected title 'fallback-session', got '%s'", sessions[0].Title)
+	if len(sessions) != 0 {
+		t.Fatalf("Expected 0 sessions (invalid session should be skipped), got %d", len(sessions))
 	}
 }
 
@@ -140,12 +137,83 @@ func TestClaudeScanner_LongContentTruncated(t *testing.T) {
 		t.Fatalf("Expected 1 session, got %d", len(sessions))
 	}
 
-	if len(sessions[0].Title) != 103 { // 100 chars + "..."
-		t.Errorf("Expected title length 103, got %d: '%s'", len(sessions[0].Title), sessions[0].Title)
+	if len([]rune(sessions[0].Title)) != NormalizedTitleWidth {
+		t.Errorf("Expected title rune length %d, got %d: '%s'", NormalizedTitleWidth, len([]rune(sessions[0].Title)), sessions[0].Title)
 	}
 
-	if sessions[0].Title != longContent[:100]+"..." {
-		t.Errorf("Title not properly truncated")
+	if !strings.HasSuffix(sessions[0].Title, "…") {
+		t.Errorf("Title should end with ellipsis, got '%s'", sessions[0].Title)
+	}
+}
+
+func TestClaudeScanner_CommandNameAsTitle(t *testing.T) {
+	tmpDir := t.TempDir()
+	projDir := filepath.Join(tmpDir, "test-project")
+	os.MkdirAll(projDir, 0755)
+
+	jsonlContent := `{"type":"user","isMeta":true,"timestamp":"2026-02-17T07:30:18.729Z","message":{"content":"<local-command-caveat>ignore</local-command-caveat>"}}
+{"type":"user","timestamp":"2026-02-17T07:30:19.000Z","message":{"content":"<command-name>/plugin</command-name>\n<command-message>plugin</command-message>"}}
+`
+	jsonlPath := filepath.Join(projDir, "session-command.jsonl")
+	os.WriteFile(jsonlPath, []byte(jsonlContent), 0644)
+
+	scanner := &ClaudeScanner{BasePath: tmpDir}
+	sessions, err := scanner.Scan("")
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("Expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].Title != "/plugin" {
+		t.Fatalf("Expected title '/plugin', got '%s'", sessions[0].Title)
+	}
+}
+
+func TestClaudeScanner_TimestampRFC3339(t *testing.T) {
+	tmpDir := t.TempDir()
+	projDir := filepath.Join(tmpDir, "test-project")
+	os.MkdirAll(projDir, 0755)
+
+	jsonlContent := `{"type":"user","timestamp":"2026-02-17T07:30:18.729Z","message":{"content":"hello"}}
+{"type":"assistant","timestamp":"2026-02-17T07:31:18.729Z","message":{"content":"world"}}
+`
+	jsonlPath := filepath.Join(projDir, "session-ts.jsonl")
+	os.WriteFile(jsonlPath, []byte(jsonlContent), 0644)
+
+	scanner := &ClaudeScanner{BasePath: tmpDir}
+	sessions, err := scanner.Scan("")
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("Expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].LastUpdated == 0 {
+		t.Fatalf("Expected non-zero LastUpdated for RFC3339 timestamp")
+	}
+}
+
+func TestClaudeScanner_UsesCwdAsProjectPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	projDir := filepath.Join(tmpDir, "encoded-project-dir")
+	os.MkdirAll(projDir, 0755)
+
+	jsonlContent := `{"type":"user","cwd":"/home/lee/11MyProjrct/projectA","timestamp":"2026-02-17T07:30:18.729Z","message":{"content":"hello"}}
+`
+	jsonlPath := filepath.Join(projDir, "session-cwd.jsonl")
+	os.WriteFile(jsonlPath, []byte(jsonlContent), 0644)
+
+	scanner := &ClaudeScanner{BasePath: tmpDir}
+	sessions, err := scanner.Scan("")
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("Expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].ProjectPath != "/home/lee/11MyProjrct/projectA" {
+		t.Fatalf("Expected cwd project path, got '%s'", sessions[0].ProjectPath)
 	}
 }
 

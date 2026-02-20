@@ -6,73 +6,58 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"agent-session-manager/internal/hidden"
 	"agent-session-manager/session"
 )
 
-// Source colors from the task requirements
 var (
-	openCodeColor = lipgloss.Color("#86EFAC") // light green
-	claudeColor   = lipgloss.Color("#FDBA74") // orange
-	qwenColor     = lipgloss.Color("#93C5FD") // light blue
+	openCodeColor = lipgloss.Color("#86EFAC")
+	claudeColor   = lipgloss.Color("#FDBA74")
+	qwenColor     = lipgloss.Color("#93C5FD")
 
-	// Mac terminal style colors
-	bgColor       = lipgloss.Color("#1E1E1E") // dark gray background
-	borderColor   = lipgloss.Color("#3C3C3C") // gray border
-	textColor     = lipgloss.Color("#FAFAFA") // white text
-	selectedColor = lipgloss.Color("#569CD6") // blue highlight
+	bgColor       = lipgloss.Color("#1E1E1E")
+	borderColor   = lipgloss.Color("#3C3C3C")
+	textColor     = lipgloss.Color("#FAFAFA")
+	selectedColor = lipgloss.Color("#569CD6")
 )
 
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#7D56F4")).
+			Background(lipgloss.Color("#334155")).
 			Padding(0, 1)
 
 	itemStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFFFFF"))
 
+	projectStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(openCodeColor)
+
 	selectedStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#3C3C3C"))
-
-	cursorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FDBA74"))
+			Background(selectedColor)
 
 	panelStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder(), true).
-			BorderForeground(borderColor).
 			Background(bgColor).
-			Padding(1, 2)
-
-	headerPanelStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder(), true, false, false, true).
-				BorderForeground(borderColor).
-				Background(bgColor).
-				Padding(0, 1)
+			Padding(1, 1)
 
 	footerPanelStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder(), false, true, true, true).
-				BorderForeground(borderColor).
 				Background(bgColor).
 				Padding(0, 1)
 
-	searchBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder(), true).
-			BorderForeground(lipgloss.Color("#569CD6")).
-			Background(bgColor).
+	searchLineStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#1D4ED8")).
 			Padding(0, 1)
-
-	searchPromptStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#569CD6"))
-
-	searchInputStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#FFFFFF"))
 
 	filterActiveStyle = lipgloss.NewStyle().
 				Bold(true).
@@ -85,10 +70,24 @@ var (
 				Padding(0, 1)
 )
 
+const projectConfirmWindow = 2 * time.Second
+
+type rowKind int
+
+const (
+	rowProject rowKind = iota
+	rowSession
+)
+
+type listRow struct {
+	kind        rowKind
+	projectPath string
+	session     session.Session
+}
+
 type model struct {
-	cursor            int
+	cursorRow         int
 	sessions          []session.Session
-	searching         bool
 	query             string
 	width             int
 	height            int
@@ -96,195 +95,11 @@ type model struct {
 	showHiddenOverlay bool
 	hiddenCursor      int
 	sourceFilter      string // "", "opencode", "claude", "qwen"
-}
 
-func (m model) Init() tea.Cmd {
-	return nil
-}
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		return m, nil
-	case tea.KeyMsg:
-		// Handle hidden overlay mode
-		if m.showHiddenOverlay {
-			hiddenIDs := []string{}
-			if m.hiddenManager != nil {
-				hiddenIDs = m.hiddenManager.List()
-			}
-			switch msg.String() {
-			case "esc":
-				m.showHiddenOverlay = false
-				m.hiddenCursor = 0
-			case "k", "up":
-				if m.hiddenCursor > 0 {
-					m.hiddenCursor--
-				}
-			case "j", "down":
-				if len(hiddenIDs) > 0 && m.hiddenCursor < len(hiddenIDs)-1 {
-					m.hiddenCursor++
-				}
-			case "r":
-				// Restore selected hidden session
-				if m.hiddenCursor < len(hiddenIDs) {
-					if err := m.hiddenManager.Remove(hiddenIDs[m.hiddenCursor]); err != nil {
-						fmt.Fprintf(os.Stderr, "Failed to restore session: %v\n", err)
-					}
-					// Clamp cursor after removal
-					if m.hiddenCursor >= len(hiddenIDs)-1 && len(hiddenIDs) > 1 {
-						m.hiddenCursor = len(hiddenIDs) - 2
-					}
-				}
-			case "a":
-				// Restore all hidden sessions
-				if m.hiddenManager != nil {
-					for _, id := range hiddenIDs {
-						if err := m.hiddenManager.Remove(id); err != nil {
-							fmt.Fprintf(os.Stderr, "Failed to restore session %s: %v\n", id, err)
-						}
-					}
-				}
-				m.showHiddenOverlay = false
-				m.hiddenCursor = 0
-			}
-			return m, nil
-		}
-
-		// Handle search mode input
-		if m.searching {
-			switch msg.String() {
-			case "esc":
-				m.searching = false
-				m.query = ""
-				// Reset cursor if out of bounds
-				if m.cursor >= len(m.sessions) {
-					m.cursor = 0
-				}
-			case "enter":
-				m.searching = false
-			case "backspace":
-				if len(m.query) > 0 {
-					m.query = m.query[:len(m.query)-1]
-				}
-				// Reset cursor when query changes
-				m.cursor = 0
-			default:
-				// Add character to query
-				m.query += msg.String()
-				// Reset cursor when query changes
-				m.cursor = 0
-			}
-			return m, nil
-		}
-
-		// Normal mode
-		switch msg.Type {
-		case tea.KeyCtrlC:
-			return m, tea.Quit
-		case tea.KeyUp:
-			visibleSessions := m.getVisibleSessions()
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			if m.cursor >= len(visibleSessions) && len(visibleSessions) > 0 {
-				m.cursor = len(visibleSessions) - 1
-			}
-		case tea.KeyDown:
-			visibleSessions := m.getVisibleSessions()
-			if m.cursor < len(visibleSessions)-1 {
-				m.cursor++
-			}
-		case tea.KeyRunes:
-			if len(msg.Runes) == 1 && msg.Runes[0] == '/' {
-				m.searching = true
-				m.query = ""
-				m.cursor = 0
-				return m, nil
-			}
-		}
-
-		switch msg.String() {
-		case "q":
-			return m, tea.Quit
-		case "enter":
-			visibleSessions := m.getVisibleSessions()
-			if m.cursor < len(visibleSessions) {
-				sess := visibleSessions[m.cursor]
-				sessionID := sess.ID
-				tool := sess.SourceTool
-
-				var restoreCmd *exec.Cmd
-				switch tool {
-				case session.SourceClaude:
-					restoreCmd = exec.Command("claude", "-r", sessionID)
-				case session.SourceOpenCode:
-					restoreCmd = exec.Command("opencode", "-s", sessionID)
-				case session.SourceQwen:
-					restoreCmd = exec.Command("qwen", "-r", sessionID)
-				default:
-					return m, nil
-				}
-
-				if err := restoreCmd.Start(); err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to launch %s: %v\n", tool, err)
-				}
-				return m, nil
-			}
-		case "k":
-			visibleSessions := m.getVisibleSessions()
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			if m.cursor >= len(visibleSessions) && len(visibleSessions) > 0 {
-				m.cursor = len(visibleSessions) - 1
-			}
-		case "j":
-			visibleSessions := m.getVisibleSessions()
-			if m.cursor < len(visibleSessions)-1 {
-				m.cursor++
-			}
-		case "h":
-			visibleSessions := m.getVisibleSessions()
-			if m.cursor < len(visibleSessions) && m.hiddenManager != nil {
-				sess := visibleSessions[m.cursor]
-				if err := m.hiddenManager.Add(sess.ID); err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to hide session: %v\n", err)
-				}
-			}
-		case "H":
-			// Toggle hidden overlay
-			m.showHiddenOverlay = true
-			m.hiddenCursor = 0
-		case "1":
-			// Filter: All
-			if m.sourceFilter != "" {
-				m.sourceFilter = ""
-				m.cursor = 0
-			}
-		case "2":
-			// Filter: Claude
-			if m.sourceFilter != "claude" {
-				m.sourceFilter = "claude"
-				m.cursor = 0
-			}
-		case "3":
-			// Filter: OpenCode
-			if m.sourceFilter != "opencode" {
-				m.sourceFilter = "opencode"
-				m.cursor = 0
-			}
-		case "4":
-			// Filter: Qwen
-			if m.sourceFilter != "qwen" {
-				m.sourceFilter = "qwen"
-				m.cursor = 0
-			}
-		}
-	}
-	return m, nil
+	confirmProjectPath string
+	confirmExpiresAt   time.Time
+	projectShellPath   string
+	statusMessage      string
 }
 
 type groupedSession struct {
@@ -292,8 +107,25 @@ type groupedSession struct {
 	sessions    []session.Session
 }
 
-// groupSessionsByProject groups sessions by ProjectPath and sorts groups
-// by most recent session in each group.
+func (m model) Init() tea.Cmd {
+	return nil
+}
+
+// keyToText extracts typed text from a key message across terminal variants.
+func keyToText(msg tea.KeyMsg) string {
+	if len(msg.Runes) > 0 {
+		return string(msg.Runes)
+	}
+
+	switch msg.Type {
+	case tea.KeySpace:
+		return " "
+	default:
+		return ""
+	}
+}
+
+// groupSessionsByProject groups sessions by project and sorts projects by latest session time.
 func groupSessionsByProject(sessions []session.Session) []groupedSession {
 	groups := make(map[string][]session.Session)
 	for _, sess := range sessions {
@@ -302,6 +134,9 @@ func groupSessionsByProject(sessions []session.Session) []groupedSession {
 
 	var result []groupedSession
 	for path, sessList := range groups {
+		sort.Slice(sessList, func(i, j int) bool {
+			return sessList[i].LastUpdated > sessList[j].LastUpdated
+		})
 		result = append(result, groupedSession{
 			projectPath: path,
 			sessions:    sessList,
@@ -309,26 +144,20 @@ func groupSessionsByProject(sessions []session.Session) []groupedSession {
 	}
 
 	sort.Slice(result, func(i, j int) bool {
-		iLatest := int64(0)
-		for _, s := range result[i].sessions {
-			if s.LastUpdated > iLatest {
-				iLatest = s.LastUpdated
-			}
+		var iTime, jTime int64
+		if len(result[i].sessions) > 0 {
+			iTime = result[i].sessions[0].LastUpdated
 		}
-		jLatest := int64(0)
-		for _, s := range result[j].sessions {
-			if s.LastUpdated > jLatest {
-				jLatest = s.LastUpdated
-			}
+		if len(result[j].sessions) > 0 {
+			jTime = result[j].sessions[0].LastUpdated
 		}
-		return iLatest > jLatest
+		return iTime > jTime
 	})
 
 	return result
 }
 
-// simplifyPath returns the full project path with home directory replaced by ~.
-// For example: "/home/user/project" -> "~/project"
+// simplifyPath returns a project path with home directory replaced by ~.
 func simplifyPath(fullPath string) string {
 	if fullPath == "" {
 		return "(no project)"
@@ -348,57 +177,371 @@ func simplifyPath(fullPath string) string {
 	return fullPath
 }
 
-// getVisibleSessions returns the list of sessions visible to the user,
-// applying search query filtering, source filter, and hidden session filtering.
-// This ensures Update() and View() use the same visible session list.
-func (m model) getVisibleSessions() []session.Session {
-	filteredSessions := m.sessions
+func truncateRunes(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if runewidth.StringWidth(s) <= maxLen {
+		return s
+	}
+	return runewidth.Truncate(s, maxLen, "…")
+}
+
+func truncateRunesNoEllipsis(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if runewidth.StringWidth(s) <= maxLen {
+		return s
+	}
+	return runewidth.Truncate(s, maxLen, "")
+}
+
+func padRightWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	current := runewidth.StringWidth(s)
+	if current >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-current)
+}
+
+// normalizeSingleLine ensures text is rendered as one terminal line.
+func normalizeSingleLine(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Join(fields, " ")
+}
+
+func (m model) getFilteredSessions() []session.Session {
+	filtered := m.sessions
+
 	if m.query != "" {
 		queryLower := strings.ToLower(m.query)
-		var filtered []session.Session
-		for _, s := range m.sessions {
-			if strings.Contains(strings.ToLower(s.ID), queryLower) ||
-				strings.Contains(strings.ToLower(string(s.SourceTool)), queryLower) ||
-				strings.Contains(strings.ToLower(s.Title), queryLower) {
-				filtered = append(filtered, s)
+		var byTitle []session.Session
+		for _, s := range filtered {
+			title := normalizeSingleLine(s.Title)
+			if strings.Contains(strings.ToLower(title), queryLower) {
+				byTitle = append(byTitle, s)
 			}
 		}
-		filteredSessions = filtered
+		filtered = byTitle
 	}
 
 	if m.sourceFilter != "" {
-		var sourceFiltered []session.Session
-		for _, s := range filteredSessions {
+		var bySource []session.Session
+		for _, s := range filtered {
 			if string(s.SourceTool) == m.sourceFilter {
-				sourceFiltered = append(sourceFiltered, s)
+				bySource = append(bySource, s)
 			}
 		}
-		filteredSessions = sourceFiltered
+		filtered = bySource
 	}
 
 	if m.hiddenManager != nil {
 		var visible []session.Session
-		for _, s := range filteredSessions {
+		for _, s := range filtered {
 			if !m.hiddenManager.IsHidden(s.ID) {
 				visible = append(visible, s)
 			}
 		}
-		filteredSessions = visible
+		filtered = visible
 	}
 
-	return filteredSessions
+	return filtered
+}
+
+func (m model) buildRows() []listRow {
+	filteredSessions := m.getFilteredSessions()
+	grouped := groupSessionsByProject(filteredSessions)
+
+	var rows []listRow
+	for _, group := range grouped {
+		rows = append(rows, listRow{
+			kind:        rowProject,
+			projectPath: group.projectPath,
+		})
+		for _, sess := range group.sessions {
+			rows = append(rows, listRow{
+				kind:        rowSession,
+				projectPath: group.projectPath,
+				session:     sess,
+			})
+		}
+	}
+
+	return rows
+}
+
+func (m *model) clampCursor(rows []listRow) {
+	if len(rows) == 0 {
+		m.cursorRow = 0
+		return
+	}
+	if m.cursorRow < 0 {
+		m.cursorRow = 0
+	}
+	if m.cursorRow >= len(rows) {
+		m.cursorRow = len(rows) - 1
+	}
+}
+
+func (m *model) clearProjectConfirm() {
+	m.confirmProjectPath = ""
+	m.confirmExpiresAt = time.Time{}
+}
+
+func (m *model) moveCursor(delta int, rows []listRow) {
+	if len(rows) == 0 {
+		m.cursorRow = 0
+		return
+	}
+
+	m.cursorRow += delta
+	if m.cursorRow < 0 {
+		m.cursorRow = 0
+	}
+	if m.cursorRow >= len(rows) {
+		m.cursorRow = len(rows) - 1
+	}
+}
+
+func launchSession(sess session.Session) {
+	var restoreCmd *exec.Cmd
+	switch sess.SourceTool {
+	case session.SourceClaude:
+		restoreCmd = exec.Command("claude", "-r", sess.ID)
+	case session.SourceOpenCode:
+		restoreCmd = exec.Command("opencode", "-s", sess.ID)
+	case session.SourceQwen:
+		restoreCmd = exec.Command("qwen", "-r", sess.ID)
+	default:
+		return
+	}
+
+	if err := restoreCmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to launch %s: %v\n", sess.SourceTool, err)
+	}
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+	case tea.MouseMsg:
+		if m.showHiddenOverlay {
+			return m, nil
+		}
+
+		rows := m.buildRows()
+		m.clampCursor(rows)
+
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.moveCursor(-1, rows)
+			m.clearProjectConfirm()
+		case tea.MouseButtonWheelDown:
+			m.moveCursor(1, rows)
+			m.clearProjectConfirm()
+		}
+		return m, nil
+	case tea.KeyMsg:
+		if m.showHiddenOverlay {
+			hiddenIDs := []string{}
+			if m.hiddenManager != nil {
+				hiddenIDs = m.hiddenManager.List()
+			}
+
+			switch msg.String() {
+			case "esc":
+				m.showHiddenOverlay = false
+				m.hiddenCursor = 0
+			case "k", "up":
+				if m.hiddenCursor > 0 {
+					m.hiddenCursor--
+				}
+			case "j", "down":
+				if len(hiddenIDs) > 0 && m.hiddenCursor < len(hiddenIDs)-1 {
+					m.hiddenCursor++
+				}
+			case "r":
+				if m.hiddenCursor < len(hiddenIDs) && m.hiddenManager != nil {
+					if err := m.hiddenManager.Remove(hiddenIDs[m.hiddenCursor]); err != nil {
+						fmt.Fprintf(os.Stderr, "failed to restore session: %v\n", err)
+					}
+				}
+			case "a":
+				if m.hiddenManager != nil {
+					for _, id := range hiddenIDs {
+						if err := m.hiddenManager.Remove(id); err != nil {
+							fmt.Fprintf(os.Stderr, "failed to restore session %s: %v\n", id, err)
+						}
+					}
+				}
+				m.showHiddenOverlay = false
+				m.hiddenCursor = 0
+			}
+			return m, nil
+		}
+
+		rows := m.buildRows()
+		m.clampCursor(rows)
+
+		switch msg.String() {
+		case "q":
+			return m, tea.Quit
+		case "1":
+			m.sourceFilter = ""
+			m.cursorRow = 0
+			m.clearProjectConfirm()
+			return m, nil
+		case "2":
+			m.sourceFilter = "claude"
+			m.cursorRow = 0
+			m.clearProjectConfirm()
+			return m, nil
+		case "3":
+			m.sourceFilter = "opencode"
+			m.cursorRow = 0
+			m.clearProjectConfirm()
+			return m, nil
+		case "4":
+			m.sourceFilter = "qwen"
+			m.cursorRow = 0
+			m.clearProjectConfirm()
+			return m, nil
+		case "H":
+			m.showHiddenOverlay = true
+			m.hiddenCursor = 0
+			return m, nil
+		case "h":
+			if len(rows) > 0 && m.cursorRow < len(rows) && rows[m.cursorRow].kind == rowSession && m.hiddenManager != nil {
+				if err := m.hiddenManager.Add(rows[m.cursorRow].session.ID); err != nil {
+					fmt.Fprintf(os.Stderr, "failed to hide session: %v\n", err)
+				}
+			}
+			m.clearProjectConfirm()
+			return m, nil
+		}
+
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			return m, tea.Quit
+		case tea.KeyEsc:
+			if m.query != "" {
+				m.query = ""
+				m.cursorRow = 0
+				m.statusMessage = "search cleared"
+			}
+			m.clearProjectConfirm()
+			return m, nil
+		case tea.KeyBackspace, tea.KeyCtrlH:
+			queryRunes := []rune(m.query)
+			if len(queryRunes) > 0 {
+				m.query = string(queryRunes[:len(queryRunes)-1])
+				m.cursorRow = 0
+			}
+			m.clearProjectConfirm()
+			return m, nil
+		case tea.KeyUp:
+			m.moveCursor(-1, rows)
+			m.clearProjectConfirm()
+			return m, nil
+		case tea.KeyDown:
+			m.moveCursor(1, rows)
+			m.clearProjectConfirm()
+			return m, nil
+		case tea.KeyEnter:
+			if len(rows) == 0 || m.cursorRow >= len(rows) {
+				return m, nil
+			}
+
+			selected := rows[m.cursorRow]
+			if selected.kind == rowSession {
+				launchSession(selected.session)
+				m.clearProjectConfirm()
+				return m, nil
+			}
+
+			now := time.Now()
+			if m.confirmProjectPath == selected.projectPath && now.Before(m.confirmExpiresAt) {
+				m.projectShellPath = selected.projectPath
+				m.clearProjectConfirm()
+				return m, tea.Quit
+			}
+
+			m.confirmProjectPath = selected.projectPath
+			m.confirmExpiresAt = now.Add(projectConfirmWindow)
+			m.statusMessage = "press Enter again within 2s to open shell"
+			return m, nil
+		}
+
+		switch msg.String() {
+		case "k":
+			m.moveCursor(-1, rows)
+			m.clearProjectConfirm()
+			return m, nil
+		case "j":
+			m.moveCursor(1, rows)
+			m.clearProjectConfirm()
+			return m, nil
+		}
+
+		if typed := keyToText(msg); typed != "" {
+			m.query += typed
+			m.cursorRow = 0
+			m.clearProjectConfirm()
+			m.statusMessage = ""
+			return m, nil
+		}
+	}
+
+	return m, nil
+}
+
+func getVisibleWindow(total, cursor, maxRows int) (int, int) {
+	if total <= 0 || maxRows <= 0 {
+		return 0, 0
+	}
+
+	if total <= maxRows {
+		return 0, total
+	}
+
+	start := 0
+	if cursor >= maxRows {
+		start = cursor - maxRows + 1
+	}
+	if start+maxRows > total {
+		start = total - maxRows
+	}
+	end := start + maxRows
+	return start, end
 }
 
 func (m model) View() string {
-	filteredSessions := m.getVisibleSessions()
+	rows := m.buildRows()
 
-	grouped := groupSessionsByProject(filteredSessions)
-
-	headerHeight := 2 // title + filter row
-	if m.searching {
-		headerHeight = 3 // title + search row + filter row
+	cursor := m.cursorRow
+	if len(rows) == 0 {
+		cursor = 0
+	} else {
+		if cursor < 0 {
+			cursor = 0
+		}
+		if cursor >= len(rows) {
+			cursor = len(rows) - 1
+		}
 	}
-	footerHeight := 1
 
 	width := m.width
 	height := m.height
@@ -409,110 +552,123 @@ func (m model) View() string {
 		height = 24
 	}
 
-	contentHeight := height - headerHeight - footerHeight - 2
-
-	header := headerPanelStyle.Width(width - 2).Render(titleStyle.Render(" Agent Session Manager "))
-
-	if m.searching {
-		searchBox := searchBoxStyle.Width(width - 4).Render(
-			searchPromptStyle.Render("/ ") + searchInputStyle.Render(m.query),
-		)
-		header = header + "\n" + searchBox
+	searchValue := normalizeSingleLine(m.query)
+	if searchValue == "" {
+		searchValue = "Type to search"
 	}
+	searchLine := searchLineStyle.Width(width - 2).Render("SEARCH> " + truncateRunes(searchValue, width-12))
 
-	// Render filter row
-	filterRow := m.renderFilterRow(width)
-	header = header + "\n" + filterRow
+	header := strings.Join([]string{
+		titleStyle.Render(" Agent Session Manager "),
+		searchLine,
+		m.renderFilterRow(),
+	}, "\n")
 
-	var s string
+	footerText := "NORMAL  |  ↑/k move  ↓/j move  Enter open  Esc clear search  q quit  1-4 filter  h hide  H hidden"
 	if m.query != "" {
-		s += fmt.Sprintf("Projects (%d sessions):\n\n", len(filteredSessions))
-	} else {
-		s += fmt.Sprintf("Projects (%d sessions):\n\n", len(filteredSessions))
+		footerText = "SEARCH  |  " + normalizeSingleLine(m.query) + "  |  ↑/k move  ↓/j move  Enter open  Esc clear search"
 	}
-
-	type visibleRow struct {
-		sessionIdx  int
-		isHeader    bool
-		projectPath string
+	if m.confirmProjectPath != "" && time.Now().Before(m.confirmExpiresAt) {
+		footerText = fmt.Sprintf("CONFIRM  |  Press Enter again within 2s to open shell at %s", simplifyPath(m.confirmProjectPath))
 	}
-	var visibleRows []visibleRow
-
-	for _, group := range grouped {
-		visibleRows = append(visibleRows, visibleRow{isHeader: true, projectPath: group.projectPath})
-
-		for i := range filteredSessions {
-			if filteredSessions[i].ProjectPath == group.projectPath {
-				visibleRows = append(visibleRows, visibleRow{sessionIdx: i, isHeader: false})
-			}
-		}
+	if m.statusMessage != "" && m.confirmProjectPath == "" {
+		footerText = strings.ToUpper(m.statusMessage) + "  |  " + footerText
 	}
+	footerText = truncateRunes(normalizeSingleLine(footerText), width-4)
 
-	displayRows := visibleRows
-	if contentHeight > 0 && len(visibleRows) > contentHeight-2 {
-		displayRows = visibleRows[:contentHeight-2]
-	}
-
-	for _, row := range displayRows {
-		if row.isHeader {
-			projectStyle := lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#86EFAC")).
-				Padding(0, 0)
-			s += projectStyle.Render("▸ "+simplifyPath(row.projectPath)) + "\n"
-		} else {
-			sess := filteredSessions[row.sessionIdx]
-			cursor := "  "
-			style := itemStyle
-
-			if m.cursor < len(filteredSessions) && filteredSessions[m.cursor].ID == sess.ID {
-				cursor = "> "
-				style = selectedStyle.Copy().Background(selectedColor)
-			}
-
-			sourceTool := sess.SourceTool
-			var sourceStyle lipgloss.Style
-			switch sourceTool {
-			case session.SourceOpenCode:
-				sourceStyle = lipgloss.NewStyle().Foreground(openCodeColor)
-			case session.SourceClaude:
-				sourceStyle = lipgloss.NewStyle().Foreground(claudeColor)
-			case session.SourceQwen:
-				sourceStyle = lipgloss.NewStyle().Foreground(qwenColor)
-			default:
-				sourceStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#AAAAAA"))
-			}
-
-			sourceStr := string(sourceTool)
-
-			line := fmt.Sprintf("%s%s [%s]",
-				cursor,
-				sess.Title,
-				sourceStyle.Render(sourceStr),
-			)
-			s += style.Render(line) + "\n"
-		}
-	}
-
-	sessionPanel := panelStyle.Width(width - 2).Height(contentHeight).Render(s)
-
-	footerHelp := "↑/k up  ↓/j down  Enter attach  q quit"
-	if m.searching {
-		footerHelp = "type to filter  Esc exit"
-	} else if m.showHiddenOverlay {
-		footerHelp = "↑/k up  ↓/j down  r restore  a restore all  esc close"
-	} else {
-		footerHelp += "  1-4 filter  h hide  H hidden"
-	}
 	footer := footerPanelStyle.Width(width - 2).Render(
 		lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#888888")).
-			Render(footerHelp),
+			Render(footerText),
 	)
+
+	headerHeight := lipgloss.Height(header)
+	footerHeight := lipgloss.Height(footer)
+	contentHeight := height - headerHeight - footerHeight
+	if contentHeight < 3 {
+		contentHeight = 3
+	}
+
+	var body strings.Builder
+	filteredSessions := m.getFilteredSessions()
+	body.WriteString(fmt.Sprintf("Projects (%d sessions):\n\n", len(filteredSessions)))
+
+	visibleRows := contentHeight - 2
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	start, end := getVisibleWindow(len(rows), cursor, visibleRows)
+	panelWidth := width - 2
+	if panelWidth < 20 {
+		panelWidth = 20
+	}
+	lineWidth := panelWidth - panelStyle.GetHorizontalFrameSize()
+	if lineWidth < 20 {
+		lineWidth = 20
+	}
+
+	for i := start; i < end; i++ {
+		row := rows[i]
+		isSelected := i == cursor
+
+		switch row.kind {
+		case rowProject:
+			pathText := truncateRunesNoEllipsis(simplifyPath(row.projectPath), lineWidth-2)
+			line := "▸ " + pathText
+			line = padRightWidth(truncateRunesNoEllipsis(line, lineWidth), lineWidth)
+			if isSelected {
+				line = "> " + truncateRunesNoEllipsis(pathText, lineWidth-2)
+				line = padRightWidth(truncateRunesNoEllipsis(line, lineWidth), lineWidth)
+				body.WriteString(selectedStyle.Render(line) + "\n")
+			} else {
+				body.WriteString(projectStyle.Render(line) + "\n")
+			}
+		case rowSession:
+			sourceText := string(row.session.SourceTool)
+			sourceStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#7A7A7A")).
+				Faint(true)
+			switch row.session.SourceTool {
+			case session.SourceOpenCode:
+				sourceStyle = lipgloss.NewStyle().Foreground(openCodeColor).Faint(true)
+			case session.SourceClaude:
+				sourceStyle = lipgloss.NewStyle().Foreground(claudeColor).Faint(true)
+			case session.SourceQwen:
+				sourceStyle = lipgloss.NewStyle().Foreground(qwenColor).Faint(true)
+			}
+
+			badgePlain := sourceText
+			badgeWidth := runewidth.StringWidth(badgePlain)
+			maxTitle := lineWidth - badgeWidth - 3
+			if maxTitle < 8 {
+				maxTitle = 8
+			}
+			title := truncateRunesNoEllipsis(normalizeSingleLine(row.session.Title), maxTitle)
+			badge := sourceStyle.Render(badgePlain)
+			leftWidth := lineWidth - badgeWidth
+			if leftWidth < 3 {
+				leftWidth = 3
+			}
+			left := padRightWidth(truncateRunesNoEllipsis("  "+title+" ", leftWidth), leftWidth)
+			line := left + badge
+			if isSelected {
+				selectedText := fmt.Sprintf("> %s %s", title, badgePlain)
+				selectedText = padRightWidth(truncateRunesNoEllipsis(selectedText, lineWidth), lineWidth)
+				body.WriteString(selectedStyle.Render(selectedText) + "\n")
+			} else {
+				body.WriteString(itemStyle.Render(line) + "\n")
+			}
+		}
+	}
+
+	if len(rows) == 0 {
+		body.WriteString("  (no sessions match current filters)\n")
+	}
+
+	sessionPanel := panelStyle.Width(panelWidth).Height(contentHeight).MaxHeight(contentHeight).Render(body.String())
 
 	view := header + "\n" + sessionPanel + "\n" + footer
 
-	// Render hidden overlay if active
 	if m.showHiddenOverlay && m.hiddenManager != nil {
 		hiddenIDs := m.hiddenManager.List()
 		overlay := m.renderHiddenOverlay(hiddenIDs, width, height)
@@ -554,7 +710,7 @@ func (m model) renderHiddenOverlay(hiddenIDs []string, width, height int) string
 	return overlayContent
 }
 
-func (m model) renderFilterRow(width int) string {
+func (m model) renderFilterRow() string {
 	filters := []struct {
 		key   string
 		value string
@@ -580,10 +736,10 @@ func (m model) renderFilterRow(width int) string {
 		buttons = append(buttons, btn)
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Center, buttons...)
+	return lipgloss.JoinHorizontal(lipgloss.Left, buttons...)
 }
 
-func main() {
+func collectSessions() []session.Session {
 	var allSessions []session.Session
 
 	scanners := []struct {
@@ -617,25 +773,54 @@ func main() {
 		return uniqueSessions[i].LastUpdated > uniqueSessions[j].LastUpdated
 	})
 
+	return uniqueSessions
+}
+
+func runShellAtPath(projectPath string) error {
+	if projectPath == "" {
+		return nil
+	}
+
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+
+	cmd := exec.Command(shell)
+	cmd.Dir = projectPath
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+func main() {
 	hiddenManager, err := hidden.NewManager("agent-session-manager")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to initialize hidden manager: %v\n", err)
+		fmt.Fprintf(os.Stderr, "warning: failed to initialize hidden manager: %v\n", err)
 	}
 
 	m := model{
-		cursor:            0,
-		sessions:          uniqueSessions,
-		width:             0,
-		height:            0,
+		cursorRow:         0,
+		sessions:          collectSessions(),
 		hiddenManager:     hiddenManager,
 		showHiddenOverlay: false,
 		hiddenCursor:      0,
 		sourceFilter:      "",
 	}
 
-	p := tea.NewProgram(m)
-	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	finalModel, err := p.Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
+	}
+
+	if fm, ok := finalModel.(model); ok && fm.projectShellPath != "" {
+		if err := runShellAtPath(fm.projectShellPath); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open project shell: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }

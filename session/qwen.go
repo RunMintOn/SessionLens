@@ -96,6 +96,7 @@ type qwenMessage struct {
 	Message   qwenMessageContent `json:"message"`
 	Timestamp any                `json:"timestamp"`
 	CreatedAt any                `json:"createdAt"`
+	Cwd       string             `json:"cwd"`
 }
 
 // qwenMessageContent represents the message content.
@@ -113,6 +114,7 @@ func (s *QwenScanner) parseSession(jsonlPath, projectDir string) *Session {
 
 	var firstUserMessage string
 	var lastUpdated int64
+	var projectPath string
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -124,6 +126,9 @@ func (s *QwenScanner) parseSession(jsonlPath, projectDir string) *Session {
 		var msg qwenMessage
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
 			continue // skip malformed JSON
+		}
+		if projectPath == "" && strings.TrimSpace(msg.Cwd) != "" {
+			projectPath = msg.Cwd
 		}
 
 		if msg.Type == "user" && firstUserMessage == "" {
@@ -157,14 +162,18 @@ func (s *QwenScanner) parseSession(jsonlPath, projectDir string) *Session {
 	}
 
 	sessionID := strings.TrimSuffix(filepath.Base(jsonlPath), filepath.Ext(jsonlPath))
+	if projectPath == "" {
+		projectPath = projectDir
+	}
 
-	return &Session{
+	normalized := NormalizeSession(Session{
 		ID:          sessionID,
 		Title:       firstUserMessage,
 		SourceTool:  SourceQwen,
-		ProjectPath: projectDir,
+		ProjectPath: projectPath,
 		LastUpdated: lastUpdated,
-	}
+	})
+	return &normalized
 }
 
 // extractTimestamp extracts an int64 timestamp from various types.

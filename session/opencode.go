@@ -76,13 +76,13 @@ func (s *OpenCodeScanner) Scan(projectPath string) ([]Session, error) {
 			titleStr = "Untitled Session"
 		}
 
-		sessions = append(sessions, Session{
+		sessions = append(sessions, NormalizeSession(Session{
 			ID:          stringFromInterface(id),
 			Title:       titleStr,
 			SourceTool:  SourceOpenCode,
 			ProjectPath: dirStr,
 			LastUpdated: int64FromInterface(timeUpdated),
-		})
+		}))
 	}
 
 	return sessions, nil
