@@ -10,7 +10,7 @@ import (
 )
 
 // NormalizedTitleWidth is the default max display width for normalized titles.
-const NormalizedTitleWidth = 80
+const NormalizedTitleWidth = 500
 
 // NormalizeSession applies source-agnostic normalization for stable TUI rendering.
 func NormalizeSession(in Session) Session {

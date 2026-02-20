@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -212,7 +213,17 @@ func truncateRunes(s string, maxLen int) string {
 	if runewidth.StringWidth(s) <= maxLen {
 		return s
 	}
-	return runewidth.Truncate(s, maxLen, "…")
+	truncated := runewidth.Truncate(s, maxLen, "…")
+	// 确保截断后是有效的 UTF-8，避免显示乱码
+	if !utf8.ValidString(truncated) {
+		// 如果无效，回退一个字符
+		runes := []rune(s)
+		if len(runes) > 0 {
+			truncated = string(runes[:len(runes)-1])
+			truncated = runewidth.Truncate(truncated, maxLen, "…")
+		}
+	}
+	return truncated
 }
 
 func truncateRunesNoEllipsis(s string, maxLen int) string {
@@ -723,28 +734,52 @@ func (m model) View() string {
 
 		badgePlain := string(sess.SourceTool)
 		badgeWidth := runewidth.StringWidth(badgePlain)
-		// Reserve space for prefix ("  " or "> ") + title + space + badge
-		// Ensure badge is always visible by limiting title length
-		prefixWidth := 2
-		if isSelected && isFocused {
-			prefixWidth = 2 // "> "
+
+		// Badge 优先策略：始终预留 Badge 空间
+		prefix := "> "
+		if !(isSelected && isFocused) {
+			prefix = "  "
 		}
-		spaceWidth := 1 // space between title and badge
-		maxTitle := rightInnerWidth - prefixWidth - badgeWidth - spaceWidth
-		if maxTitle < 0 {
-			maxTitle = 0
+		prefixWidth := runewidth.StringWidth(prefix)
+		spaceWidth := 1 // 标题和 Badge 之间的空格
+
+		// 宽松截断策略：先尝试完整显示标题，超出窗口宽度时才截断
+		title := normalizeSingleLine(sess.Title)
+
+		// 用纯文本计算宽度（避免 ANSI 转义序列干扰）
+		plainLine := prefix + title + " " + badgePlain
+		if runewidth.StringWidth(plainLine) > rightInnerWidth {
+			maxTitle := rightInnerWidth - prefixWidth - badgeWidth - spaceWidth
+			if maxTitle > 0 {
+				title = truncateRunes(title, maxTitle)
+			} else {
+				title = ""
+			}
 		}
-		title := truncateRunesNoEllipsis(normalizeSingleLine(sess.Title), maxTitle)
+
+		// 应用颜色样式到 Badge
+		badgeStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#7A7A7A")).
+			Faint(true)
+		switch sess.SourceTool {
+		case session.SourceOpenCode:
+			badgeStyle = lipgloss.NewStyle().Foreground(openCodeColor).Faint(true)
+		case session.SourceClaude:
+			badgeStyle = lipgloss.NewStyle().Foreground(claudeColor).Faint(true)
+		case session.SourceQwen:
+			badgeStyle = lipgloss.NewStyle().Foreground(qwenColor).Faint(true)
+		}
+		badge := badgeStyle.Render(badgePlain)
 
 		if isSelected && isFocused {
-			// Only show highlight when focus is on right panel
-			selectedText := "> " + title + " " + badgePlain
-			selectedText = padRightWidth(truncateRunesNoEllipsis(selectedText, rightInnerWidth), rightInnerWidth)
-			rightBody.WriteString(selectedStyle.Render(selectedText) + "\n")
+			// 选中且焦点在右面板：显示高亮
+			line := prefix + title + " " + badge
+			line = padRightWidth(line, rightInnerWidth)
+			rightBody.WriteString(selectedStyle.Render(line) + "\n")
 		} else {
-			// No highlight when focus is on left panel
-			line := "  " + title + " " + badgePlain
-			line = padRightWidth(truncateRunesNoEllipsis(line, rightInnerWidth), rightInnerWidth)
+			// 未选中或焦点不在右面板
+			line := prefix + title + " " + badge
+			line = padRightWidth(line, rightInnerWidth)
 			rightBody.WriteString(itemStyle.Render(line) + "\n")
 		}
 	}
