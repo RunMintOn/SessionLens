@@ -85,8 +85,14 @@ type listRow struct {
 	session     session.Session
 }
 
+type focusPanel int
+
+const (
+	focusLeft focusPanel = iota
+	focusRight
+)
+
 type model struct {
-	cursorRow         int
 	sessions          []session.Session
 	query             string
 	width             int
@@ -100,6 +106,13 @@ type model struct {
 	confirmExpiresAt   time.Time
 	projectShellPath   string
 	statusMessage      string
+
+	// dual-pane navigation
+	focusPanel       focusPanel
+	projectCursor    int
+	sessionCursor    int
+	projectScrollOffset  int
+	sessionScrollOffset  int
 }
 
 type groupedSession struct {
@@ -109,6 +122,21 @@ type groupedSession struct {
 
 func (m model) Init() tea.Cmd {
 	return nil
+}
+
+// getGroupedProjects returns filtered and grouped projects with their sessions.
+func (m model) getGroupedProjects() []groupedSession {
+	filtered := m.getFilteredSessions()
+	return groupSessionsByProject(filtered)
+}
+
+// getSelectedProjectSessions returns sessions for the currently selected project.
+func (m model) getSelectedProjectSessions() []session.Session {
+	grouped := m.getGroupedProjects()
+	if m.projectCursor < 0 || m.projectCursor >= len(grouped) {
+		return nil
+	}
+	return grouped[m.projectCursor].sessions
 }
 
 // keyToText extracts typed text from a key message across terminal variants.
@@ -258,59 +286,37 @@ func (m model) getFilteredSessions() []session.Session {
 	return filtered
 }
 
-func (m model) buildRows() []listRow {
-	filteredSessions := m.getFilteredSessions()
-	grouped := groupSessionsByProject(filteredSessions)
-
-	var rows []listRow
-	for _, group := range grouped {
-		rows = append(rows, listRow{
-			kind:        rowProject,
-			projectPath: group.projectPath,
-		})
-		for _, sess := range group.sessions {
-			rows = append(rows, listRow{
-				kind:        rowSession,
-				projectPath: group.projectPath,
-				session:     sess,
-			})
-		}
-	}
-
-	return rows
-}
-
-func (m *model) clampCursor(rows []listRow) {
-	if len(rows) == 0 {
-		m.cursorRow = 0
+func (m *model) clampProjectCursor() {
+	grouped := m.getGroupedProjects()
+	if len(grouped) == 0 {
+		m.projectCursor = 0
 		return
 	}
-	if m.cursorRow < 0 {
-		m.cursorRow = 0
+	if m.projectCursor < 0 {
+		m.projectCursor = 0
 	}
-	if m.cursorRow >= len(rows) {
-		m.cursorRow = len(rows) - 1
+	if m.projectCursor >= len(grouped) {
+		m.projectCursor = len(grouped) - 1
+	}
+}
+
+func (m *model) clampSessionCursor() {
+	sessions := m.getSelectedProjectSessions()
+	if len(sessions) == 0 {
+		m.sessionCursor = 0
+		return
+	}
+	if m.sessionCursor < 0 {
+		m.sessionCursor = 0
+	}
+	if m.sessionCursor >= len(sessions) {
+		m.sessionCursor = len(sessions) - 1
 	}
 }
 
 func (m *model) clearProjectConfirm() {
 	m.confirmProjectPath = ""
 	m.confirmExpiresAt = time.Time{}
-}
-
-func (m *model) moveCursor(delta int, rows []listRow) {
-	if len(rows) == 0 {
-		m.cursorRow = 0
-		return
-	}
-
-	m.cursorRow += delta
-	if m.cursorRow < 0 {
-		m.cursorRow = 0
-	}
-	if m.cursorRow >= len(rows) {
-		m.cursorRow = len(rows) - 1
-	}
 }
 
 func launchSession(sess session.Session) {
@@ -342,17 +348,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		rows := m.buildRows()
-		m.clampCursor(rows)
-
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
-			m.moveCursor(-1, rows)
-			m.clearProjectConfirm()
+			if m.focusPanel == focusLeft {
+				m.projectCursor--
+				m.clearProjectConfirm()
+			} else {
+				m.sessionCursor--
+				m.clearProjectConfirm()
+			}
 		case tea.MouseButtonWheelDown:
-			m.moveCursor(1, rows)
-			m.clearProjectConfirm()
+			if m.focusPanel == focusLeft {
+				m.projectCursor++
+				m.clearProjectConfirm()
+			} else {
+				m.sessionCursor++
+				m.clearProjectConfirm()
+			}
 		}
+		m.clampProjectCursor()
+		m.clampSessionCursor()
 		return m, nil
 	case tea.KeyMsg:
 		if m.showHiddenOverlay {
@@ -393,30 +408,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		rows := m.buildRows()
-		m.clampCursor(rows)
-
 		switch msg.String() {
 		case "q":
 			return m, tea.Quit
 		case "1":
 			m.sourceFilter = ""
-			m.cursorRow = 0
+			m.projectCursor = 0
+			m.sessionCursor = 0
 			m.clearProjectConfirm()
 			return m, nil
 		case "2":
 			m.sourceFilter = "claude"
-			m.cursorRow = 0
+			m.projectCursor = 0
+			m.sessionCursor = 0
 			m.clearProjectConfirm()
 			return m, nil
 		case "3":
 			m.sourceFilter = "opencode"
-			m.cursorRow = 0
+			m.projectCursor = 0
+			m.sessionCursor = 0
 			m.clearProjectConfirm()
 			return m, nil
 		case "4":
 			m.sourceFilter = "qwen"
-			m.cursorRow = 0
+			m.projectCursor = 0
+			m.sessionCursor = 0
 			m.clearProjectConfirm()
 			return m, nil
 		case "H":
@@ -424,10 +440,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.hiddenCursor = 0
 			return m, nil
 		case "h":
-			if len(rows) > 0 && m.cursorRow < len(rows) && rows[m.cursorRow].kind == rowSession && m.hiddenManager != nil {
-				if err := m.hiddenManager.Add(rows[m.cursorRow].session.ID); err != nil {
+			sessions := m.getSelectedProjectSessions()
+			if len(sessions) > 0 && m.sessionCursor < len(sessions) && m.hiddenManager != nil {
+				if err := m.hiddenManager.Add(sessions[m.sessionCursor].ID); err != nil {
 					fmt.Fprintf(os.Stderr, "failed to hide session: %v\n", err)
 				}
+			}
+			m.clearProjectConfirm()
+			return m, nil
+		case "tab":
+			// Switch between left and right panels
+			if m.focusPanel == focusLeft {
+				m.focusPanel = focusRight
+			} else {
+				m.focusPanel = focusLeft
 			}
 			m.clearProjectConfirm()
 			return m, nil
@@ -439,7 +465,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEsc:
 			if m.query != "" {
 				m.query = ""
-				m.cursorRow = 0
+				m.projectCursor = 0
+				m.sessionCursor = 0
 				m.statusMessage = "search cleared"
 			}
 			m.clearProjectConfirm()
@@ -448,57 +475,84 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			queryRunes := []rune(m.query)
 			if len(queryRunes) > 0 {
 				m.query = string(queryRunes[:len(queryRunes)-1])
-				m.cursorRow = 0
+				m.projectCursor = 0
+				m.sessionCursor = 0
 			}
 			m.clearProjectConfirm()
 			return m, nil
 		case tea.KeyUp:
-			m.moveCursor(-1, rows)
+			if m.focusPanel == focusLeft {
+				m.projectCursor--
+			} else {
+				m.sessionCursor--
+			}
 			m.clearProjectConfirm()
+			m.clampProjectCursor()
+			m.clampSessionCursor()
 			return m, nil
 		case tea.KeyDown:
-			m.moveCursor(1, rows)
+			if m.focusPanel == focusLeft {
+				m.projectCursor++
+			} else {
+				m.sessionCursor++
+			}
 			m.clearProjectConfirm()
+			m.clampProjectCursor()
+			m.clampSessionCursor()
 			return m, nil
 		case tea.KeyEnter:
-			if len(rows) == 0 || m.cursorRow >= len(rows) {
+			sessions := m.getSelectedProjectSessions()
+			if len(sessions) == 0 || m.sessionCursor >= len(sessions) {
+				// No sessions in selected project, try to open shell at project
+				grouped := m.getGroupedProjects()
+				if len(grouped) > 0 && m.projectCursor < len(grouped) {
+					selectedProject := grouped[m.projectCursor].projectPath
+					now := time.Now()
+					if m.confirmProjectPath == selectedProject && now.Before(m.confirmExpiresAt) {
+						m.projectShellPath = selectedProject
+						m.clearProjectConfirm()
+						return m, tea.Quit
+					}
+					m.confirmProjectPath = selectedProject
+					m.confirmExpiresAt = now.Add(projectConfirmWindow)
+					m.statusMessage = "press Enter again within 2s to open shell"
+				}
 				return m, nil
 			}
 
-			selected := rows[m.cursorRow]
-			if selected.kind == rowSession {
-				launchSession(selected.session)
-				m.clearProjectConfirm()
-				return m, nil
-			}
-
-			now := time.Now()
-			if m.confirmProjectPath == selected.projectPath && now.Before(m.confirmExpiresAt) {
-				m.projectShellPath = selected.projectPath
-				m.clearProjectConfirm()
-				return m, tea.Quit
-			}
-
-			m.confirmProjectPath = selected.projectPath
-			m.confirmExpiresAt = now.Add(projectConfirmWindow)
-			m.statusMessage = "press Enter again within 2s to open shell"
+			selected := sessions[m.sessionCursor]
+			launchSession(selected)
+			m.clearProjectConfirm()
 			return m, nil
 		}
 
 		switch msg.String() {
 		case "k":
-			m.moveCursor(-1, rows)
+			if m.focusPanel == focusLeft {
+				m.projectCursor--
+			} else {
+				m.sessionCursor--
+			}
 			m.clearProjectConfirm()
+			m.clampProjectCursor()
+			m.clampSessionCursor()
 			return m, nil
 		case "j":
-			m.moveCursor(1, rows)
+			if m.focusPanel == focusLeft {
+				m.projectCursor++
+			} else {
+				m.sessionCursor++
+			}
 			m.clearProjectConfirm()
+			m.clampProjectCursor()
+			m.clampSessionCursor()
 			return m, nil
 		}
 
 		if typed := keyToText(msg); typed != "" {
 			m.query += typed
-			m.cursorRow = 0
+			m.projectCursor = 0
+			m.sessionCursor = 0
 			m.clearProjectConfirm()
 			m.statusMessage = ""
 			return m, nil
@@ -529,20 +583,6 @@ func getVisibleWindow(total, cursor, maxRows int) (int, int) {
 }
 
 func (m model) View() string {
-	rows := m.buildRows()
-
-	cursor := m.cursorRow
-	if len(rows) == 0 {
-		cursor = 0
-	} else {
-		if cursor < 0 {
-			cursor = 0
-		}
-		if cursor >= len(rows) {
-			cursor = len(rows) - 1
-		}
-	}
-
 	width := m.width
 	height := m.height
 	if width == 0 {
@@ -564,9 +604,9 @@ func (m model) View() string {
 		m.renderFilterRow(),
 	}, "\n")
 
-	footerText := "NORMAL  |  ↑/k move  ↓/j move  Enter open  Esc clear search  q quit  1-4 filter  h hide  H hidden"
+	footerText := "Tab switch  ↑/k move  ↓/j move  Enter open  Esc clear search  q quit  1-4 filter  h hide  H hidden"
 	if m.query != "" {
-		footerText = "SEARCH  |  " + normalizeSingleLine(m.query) + "  |  ↑/k move  ↓/j move  Enter open  Esc clear search"
+		footerText = "SEARCH  |  " + normalizeSingleLine(m.query) + "  |  Tab switch  ↑/k move  ↓/j move  Enter open  Esc clear search"
 	}
 	if m.confirmProjectPath != "" && time.Now().Before(m.confirmExpiresAt) {
 		footerText = fmt.Sprintf("CONFIRM  |  Press Enter again within 2s to open shell at %s", simplifyPath(m.confirmProjectPath))
@@ -589,85 +629,144 @@ func (m model) View() string {
 		contentHeight = 3
 	}
 
-	var body strings.Builder
-	filteredSessions := m.getFilteredSessions()
-	body.WriteString(fmt.Sprintf("Projects (%d sessions):\n\n", len(filteredSessions)))
-
-	visibleRows := contentHeight - 2
-	if visibleRows < 1 {
-		visibleRows = 1
+	// Split width into left and right panels
+	leftPanelWidth := width / 3
+	if leftPanelWidth < 20 {
+		leftPanelWidth = 20
 	}
-	start, end := getVisibleWindow(len(rows), cursor, visibleRows)
-	panelWidth := width - 2
-	if panelWidth < 20 {
-		panelWidth = 20
-	}
-	lineWidth := panelWidth - panelStyle.GetHorizontalFrameSize()
-	if lineWidth < 20 {
-		lineWidth = 20
+	rightPanelWidth := width - leftPanelWidth - 1 // -1 for separator
+	if rightPanelWidth < 30 {
+		rightPanelWidth = 30
 	}
 
-	for i := start; i < end; i++ {
-		row := rows[i]
-		isSelected := i == cursor
+	leftInnerWidth := leftPanelWidth - panelStyle.GetHorizontalFrameSize()
+	rightInnerWidth := rightPanelWidth - panelStyle.GetHorizontalFrameSize()
 
-		switch row.kind {
-		case rowProject:
-			pathText := truncateRunesNoEllipsis(simplifyPath(row.projectPath), lineWidth-2)
-			line := "▸ " + pathText
-			line = padRightWidth(truncateRunesNoEllipsis(line, lineWidth), lineWidth)
-			if isSelected {
-				line = "> " + truncateRunesNoEllipsis(pathText, lineWidth-2)
-				line = padRightWidth(truncateRunesNoEllipsis(line, lineWidth), lineWidth)
-				body.WriteString(selectedStyle.Render(line) + "\n")
+	// Build left panel (projects)
+	grouped := m.getGroupedProjects()
+	var leftBody strings.Builder
+	leftBody.WriteString(fmt.Sprintf("Projects (%d)\n\n", len(grouped)))
+
+	leftVisibleRows := contentHeight - 3
+	if leftVisibleRows < 1 {
+		leftVisibleRows = 1
+	}
+	leftStart, leftEnd := getVisibleWindow(len(grouped), m.projectCursor, leftVisibleRows)
+
+	for i := leftStart; i < leftEnd; i++ {
+		group := grouped[i]
+		isSelected := i == m.projectCursor
+		isFocused := m.focusPanel == focusLeft
+
+		pathText := truncateRunesNoEllipsis(simplifyPath(group.projectPath), leftInnerWidth-2)
+		sessionCount := fmt.Sprintf(" (%d)", len(group.sessions))
+		countWidth := runewidth.StringWidth(sessionCount)
+		maxPath := leftInnerWidth - countWidth - 2
+		if maxPath < 5 {
+			maxPath = 5
+		}
+		pathText = truncateRunesNoEllipsis(pathText, maxPath)
+		line := "  " + pathText + sessionCount
+
+		if isSelected {
+			if isFocused {
+				line = "> " + pathText + sessionCount
+				line = padRightWidth(truncateRunesNoEllipsis(line, leftInnerWidth), leftInnerWidth)
+				leftBody.WriteString(selectedStyle.Render(line) + "\n")
 			} else {
-				body.WriteString(projectStyle.Render(line) + "\n")
+				line = "▸ " + pathText + sessionCount
+				line = padRightWidth(truncateRunesNoEllipsis(line, leftInnerWidth), leftInnerWidth)
+				leftBody.WriteString(projectStyle.Render(line) + "\n")
 			}
-		case rowSession:
-			sourceText := string(row.session.SourceTool)
-			sourceStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#7A7A7A")).
-				Faint(true)
-			switch row.session.SourceTool {
-			case session.SourceOpenCode:
-				sourceStyle = lipgloss.NewStyle().Foreground(openCodeColor).Faint(true)
-			case session.SourceClaude:
-				sourceStyle = lipgloss.NewStyle().Foreground(claudeColor).Faint(true)
-			case session.SourceQwen:
-				sourceStyle = lipgloss.NewStyle().Foreground(qwenColor).Faint(true)
-			}
-
-			badgePlain := sourceText
-			badgeWidth := runewidth.StringWidth(badgePlain)
-			maxTitle := lineWidth - badgeWidth - 3
-			if maxTitle < 8 {
-				maxTitle = 8
-			}
-			title := truncateRunesNoEllipsis(normalizeSingleLine(row.session.Title), maxTitle)
-			badge := sourceStyle.Render(badgePlain)
-			leftWidth := lineWidth - badgeWidth
-			if leftWidth < 3 {
-				leftWidth = 3
-			}
-			left := padRightWidth(truncateRunesNoEllipsis("  "+title+" ", leftWidth), leftWidth)
-			line := left + badge
-			if isSelected {
-				selectedText := fmt.Sprintf("> %s %s", title, badgePlain)
-				selectedText = padRightWidth(truncateRunesNoEllipsis(selectedText, lineWidth), lineWidth)
-				body.WriteString(selectedStyle.Render(selectedText) + "\n")
-			} else {
-				body.WriteString(itemStyle.Render(line) + "\n")
-			}
+		} else {
+			line = padRightWidth(truncateRunesNoEllipsis(line, leftInnerWidth), leftInnerWidth)
+			leftBody.WriteString(itemStyle.Render(line) + "\n")
 		}
 	}
 
-	if len(rows) == 0 {
-		body.WriteString("  (no sessions match current filters)\n")
+	if len(grouped) == 0 {
+		leftBody.WriteString("  (no projects)\n")
 	}
 
-	sessionPanel := panelStyle.Width(panelWidth).Height(contentHeight).MaxHeight(contentHeight).Render(body.String())
+	leftPanel := panelStyle.Width(leftPanelWidth).Height(contentHeight).Render(leftBody.String())
 
-	view := header + "\n" + sessionPanel + "\n" + footer
+	// Build right panel (sessions for selected project)
+	var rightBody strings.Builder
+	var selectedProjectPath string
+	if len(grouped) > 0 && m.projectCursor < len(grouped) {
+		selectedProjectPath = grouped[m.projectCursor].projectPath
+		rightBody.WriteString(fmt.Sprintf("Sessions: %s\n\n", simplifyPath(selectedProjectPath)))
+	} else {
+		rightBody.WriteString("Sessions\n\n")
+	}
+
+	sessions := m.getSelectedProjectSessions()
+	rightVisibleRows := contentHeight - 3
+	if rightVisibleRows < 1 {
+		rightVisibleRows = 1
+	}
+	rightStart, rightEnd := getVisibleWindow(len(sessions), m.sessionCursor, rightVisibleRows)
+
+	for i := rightStart; i < rightEnd; i++ {
+		sess := sessions[i]
+		isSelected := i == m.sessionCursor
+		isFocused := m.focusPanel == focusRight
+
+		sourceText := string(sess.SourceTool)
+		sourceStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#7A7A7A")).
+			Faint(true)
+		switch sess.SourceTool {
+		case session.SourceOpenCode:
+			sourceStyle = lipgloss.NewStyle().Foreground(openCodeColor).Faint(true)
+		case session.SourceClaude:
+			sourceStyle = lipgloss.NewStyle().Foreground(claudeColor).Faint(true)
+		case session.SourceQwen:
+			sourceStyle = lipgloss.NewStyle().Foreground(qwenColor).Faint(true)
+		}
+
+		badgePlain := sourceText
+		badgeWidth := runewidth.StringWidth(badgePlain)
+		maxTitle := rightInnerWidth - badgeWidth - 3
+		if maxTitle < 8 {
+			maxTitle = 8
+		}
+		title := truncateRunesNoEllipsis(normalizeSingleLine(sess.Title), maxTitle)
+		badge := sourceStyle.Render(badgePlain)
+		leftWidth := rightInnerWidth - badgeWidth
+		if leftWidth < 3 {
+			leftWidth = 3
+		}
+		line := "  " + title + " " + badge
+
+		if isSelected {
+			if isFocused {
+				selectedText := "> " + title + " " + badgePlain
+				selectedText = padRightWidth(truncateRunesNoEllipsis(selectedText, rightInnerWidth), rightInnerWidth)
+				rightBody.WriteString(selectedStyle.Render(selectedText) + "\n")
+			} else {
+				line = "▸ " + title + " " + badgePlain
+				line = padRightWidth(truncateRunesNoEllipsis(line, rightInnerWidth), rightInnerWidth)
+				rightBody.WriteString(projectStyle.Render(line) + "\n")
+			}
+		} else {
+			line = padRightWidth(truncateRunesNoEllipsis(line, rightInnerWidth), rightInnerWidth)
+			rightBody.WriteString(itemStyle.Render(line) + "\n")
+		}
+	}
+
+	if len(sessions) == 0 {
+		if selectedProjectPath != "" {
+			rightBody.WriteString("  (no sessions in this project)\n")
+		} else {
+			rightBody.WriteString("  (select a project)\n")
+		}
+	}
+
+	rightPanel := panelStyle.Width(rightPanelWidth).Height(contentHeight).Render(rightBody.String())
+
+	// Join panels horizontally
+	view := header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel) + "\n" + footer
 
 	if m.showHiddenOverlay && m.hiddenManager != nil {
 		hiddenIDs := m.hiddenManager.List()
@@ -802,12 +901,16 @@ func main() {
 	}
 
 	m := model{
-		cursorRow:         0,
 		sessions:          collectSessions(),
 		hiddenManager:     hiddenManager,
 		showHiddenOverlay: false,
 		hiddenCursor:      0,
 		sourceFilter:      "",
+		focusPanel:        focusLeft,
+		projectCursor:     0,
+		sessionCursor:     0,
+		projectScrollOffset: 0,
+		sessionScrollOffset: 0,
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
