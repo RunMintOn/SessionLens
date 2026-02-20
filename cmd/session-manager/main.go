@@ -721,20 +721,7 @@ func (m model) View() string {
 		isSelected := i == m.sessionCursor
 		isFocused := m.focusPanel == focusRight
 
-		sourceText := string(sess.SourceTool)
-		sourceStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#7A7A7A")).
-			Faint(true)
-		switch sess.SourceTool {
-		case session.SourceOpenCode:
-			sourceStyle = lipgloss.NewStyle().Foreground(openCodeColor).Faint(true)
-		case session.SourceClaude:
-			sourceStyle = lipgloss.NewStyle().Foreground(claudeColor).Faint(true)
-		case session.SourceQwen:
-			sourceStyle = lipgloss.NewStyle().Foreground(qwenColor).Faint(true)
-		}
-
-		badgePlain := sourceText
+		badgePlain := string(sess.SourceTool)
 		badgeWidth := runewidth.StringWidth(badgePlain)
 		// Reserve space for prefix ("  " or "> ") + title + space + badge
 		// Ensure badge is always visible by limiting title length
@@ -748,7 +735,6 @@ func (m model) View() string {
 			maxTitle = 0
 		}
 		title := truncateRunesNoEllipsis(normalizeSingleLine(sess.Title), maxTitle)
-		badge := sourceStyle.Render(badgePlain)
 
 		if isSelected && isFocused {
 			// Only show highlight when focus is on right panel
