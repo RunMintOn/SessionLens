@@ -9,20 +9,26 @@ import (
 	"time"
 )
 
-// Manager manages hidden session IDs with persistent storage.
+// HiddenEntry represents a hidden session with ID and title.
+type HiddenEntry struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// Manager manages hidden sessions with persistent storage.
 type Manager struct {
-	mu        sync.RWMutex
-	once      sync.Once
-	appName   string
-	filePath  string
-	hiddenSet map[string]bool
-	loaded    bool
-	loadErr   error
+	mu         sync.RWMutex
+	once       sync.Once
+	appName    string
+	filePath   string
+	hiddenMap  map[string]HiddenEntry  // ID -> Entry
+	loaded     bool
+	loadErr    error
 }
 
 // hiddenData represents the JSON structure stored on disk.
 type hiddenData struct {
-	Hidden []string `json:"hidden"`
+	Hidden []HiddenEntry `json:"hidden"`
 }
 
 // NewManager creates a new Manager for the given app name.
@@ -45,7 +51,7 @@ func NewManager(appName string) (*Manager, error) {
 	m := &Manager{
 		appName:   appName,
 		filePath:  filePath,
-		hiddenSet: make(map[string]bool),
+		hiddenMap: make(map[string]HiddenEntry),
 		loaded:    false,
 	}
 
@@ -57,14 +63,14 @@ func NewManager(appName string) (*Manager, error) {
 	return m, nil
 }
 
-// loadLocked loads hidden session IDs from disk. Must be called WITH mu lock held.
+// loadLocked loads hidden session entries from disk. Must be called WITH mu lock held.
 func (m *Manager) loadLocked() error {
 
 	data, err := os.ReadFile(m.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// File doesn't exist yet - start with empty state
-			m.hiddenSet = make(map[string]bool)
+			m.hiddenMap = make(map[string]HiddenEntry)
 			m.loaded = true
 			return nil
 		}
@@ -78,7 +84,7 @@ func (m *Manager) loadLocked() error {
 		if err := os.Rename(m.filePath, corruptPath); err != nil {
 			return fmt.Errorf("corrupt JSON detected and failed to rename file: %w", err)
 		}
-		m.hiddenSet = make(map[string]bool)
+		m.hiddenMap = make(map[string]HiddenEntry)
 		m.loaded = true
 		// Create new empty file to prevent repeated corruption detection
 		if err := m.save(); err != nil {
@@ -87,15 +93,15 @@ func (m *Manager) loadLocked() error {
 		return nil
 	}
 
-	m.hiddenSet = make(map[string]bool)
-	for _, id := range hidden.Hidden {
-		m.hiddenSet[id] = true
+	m.hiddenMap = make(map[string]HiddenEntry)
+	for _, entry := range hidden.Hidden {
+		m.hiddenMap[entry.ID] = entry
 	}
 	m.loaded = true
 	return nil
 }
 
-// save writes hidden session IDs to disk atomically. Must be called with mu held.
+// save writes hidden session entries to disk atomically. Must be called with mu held.
 func (m *Manager) save() error {
 	// Ensure data directory exists
 	dataDir := filepath.Dir(m.filePath)
@@ -103,10 +109,10 @@ func (m *Manager) save() error {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	// Build list of hidden IDs
-	var hiddenList []string
-	for id := range m.hiddenSet {
-		hiddenList = append(hiddenList, id)
+	// Build list of hidden entries
+	var hiddenList []HiddenEntry
+	for _, entry := range m.hiddenMap {
+		hiddenList = append(hiddenList, entry)
 	}
 
 	data := hiddenData{Hidden: hiddenList}
@@ -161,8 +167,8 @@ func (m *Manager) ensureLoaded() error {
 	return m.loadErr
 }
 
-// Add adds a session ID to the hidden list and persists to disk.
-func (m *Manager) Add(sessionID string) error {
+// Add adds a session to the hidden list and persists to disk.
+func (m *Manager) Add(sessionID, title string) error {
 	if sessionID == "" {
 		return fmt.Errorf("sessionID cannot be empty")
 	}
@@ -174,11 +180,11 @@ func (m *Manager) Add(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.hiddenSet[sessionID] {
+	if _, exists := m.hiddenMap[sessionID]; exists {
 		return nil
 	}
 
-	m.hiddenSet[sessionID] = true
+	m.hiddenMap[sessionID] = HiddenEntry{ID: sessionID, Title: title}
 	return m.save()
 }
 
@@ -195,11 +201,11 @@ func (m *Manager) Remove(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if !m.hiddenSet[sessionID] {
+	if _, exists := m.hiddenMap[sessionID]; !exists {
 		return nil
 	}
 
-	delete(m.hiddenSet, sessionID)
+	delete(m.hiddenMap, sessionID)
 	return m.save()
 }
 
@@ -209,19 +215,20 @@ func (m *Manager) IsHidden(sessionID string) bool {
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.hiddenSet[sessionID]
+	_, exists := m.hiddenMap[sessionID]
+	return exists
 }
 
-// List returns all hidden session IDs.
-func (m *Manager) List() []string {
+// List returns all hidden session entries.
+func (m *Manager) List() []HiddenEntry {
 	m.ensureLoaded()
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	result := make([]string, 0, len(m.hiddenSet))
-	for id := range m.hiddenSet {
-		result = append(result, id)
+	result := make([]HiddenEntry, 0, len(m.hiddenMap))
+	for _, entry := range m.hiddenMap {
+		result = append(result, entry)
 	}
 	return result
 }

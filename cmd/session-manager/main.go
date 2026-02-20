@@ -371,9 +371,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		if m.showHiddenOverlay {
-			hiddenIDs := []string{}
+			hiddenEntries := []hidden.HiddenEntry{}
 			if m.hiddenManager != nil {
-				hiddenIDs = m.hiddenManager.List()
+				hiddenEntries = m.hiddenManager.List()
 			}
 
 			switch msg.String() {
@@ -385,20 +385,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.hiddenCursor--
 				}
 			case "j", "down":
-				if len(hiddenIDs) > 0 && m.hiddenCursor < len(hiddenIDs)-1 {
+				if len(hiddenEntries) > 0 && m.hiddenCursor < len(hiddenEntries)-1 {
 					m.hiddenCursor++
 				}
 			case "r":
-				if m.hiddenCursor < len(hiddenIDs) && m.hiddenManager != nil {
-					if err := m.hiddenManager.Remove(hiddenIDs[m.hiddenCursor]); err != nil {
+				if m.hiddenCursor < len(hiddenEntries) && m.hiddenManager != nil {
+					if err := m.hiddenManager.Remove(hiddenEntries[m.hiddenCursor].ID); err != nil {
 						fmt.Fprintf(os.Stderr, "failed to restore session: %v\n", err)
 					}
 				}
 			case "a":
 				if m.hiddenManager != nil {
-					for _, id := range hiddenIDs {
-						if err := m.hiddenManager.Remove(id); err != nil {
-							fmt.Fprintf(os.Stderr, "failed to restore session %s: %v\n", id, err)
+					for _, entry := range hiddenEntries {
+						if err := m.hiddenManager.Remove(entry.ID); err != nil {
+							fmt.Fprintf(os.Stderr, "failed to restore session %s: %v\n", entry.ID, err)
 						}
 					}
 				}
@@ -442,7 +442,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "h":
 			sessions := m.getSelectedProjectSessions()
 			if len(sessions) > 0 && m.sessionCursor < len(sessions) && m.hiddenManager != nil {
-				if err := m.hiddenManager.Add(sessions[m.sessionCursor].ID); err != nil {
+				sess := sessions[m.sessionCursor]
+				if err := m.hiddenManager.Add(sess.ID, sess.Title); err != nil {
 					fmt.Fprintf(os.Stderr, "failed to hide session: %v\n", err)
 				}
 			}
@@ -455,6 +456,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.focusPanel = focusLeft
 			}
+			m.clearProjectConfirm()
+			return m, nil
+		case "right":
+			m.focusPanel = focusRight
+			m.clearProjectConfirm()
+			return m, nil
+		case "left":
+			m.focusPanel = focusLeft
 			m.clearProjectConfirm()
 			return m, nil
 		}
@@ -604,9 +613,9 @@ func (m model) View() string {
 		m.renderFilterRow(),
 	}, "\n")
 
-	footerText := "Tab switch  ↑/k move  ↓/j move  Enter open  Esc clear search  q quit  1-4 filter  h hide  H hidden"
+	footerText := "←/→ switch  ↑/k move  ↓/j move  Enter open  Esc clear search  q quit  1-4 filter  h hide  H hidden"
 	if m.query != "" {
-		footerText = "SEARCH  |  " + normalizeSingleLine(m.query) + "  |  Tab switch  ↑/k move  ↓/j move  Enter open  Esc clear search"
+		footerText = "SEARCH  |  " + normalizeSingleLine(m.query) + "  |  ←/→ switch  ↑/k move  ↓/j move  Enter open  Esc clear search"
 	}
 	if m.confirmProjectPath != "" && time.Now().Before(m.confirmExpiresAt) {
 		footerText = fmt.Sprintf("CONFIRM  |  Press Enter again within 2s to open shell at %s", simplifyPath(m.confirmProjectPath))
@@ -737,19 +746,15 @@ func (m model) View() string {
 		if leftWidth < 3 {
 			leftWidth = 3
 		}
-		line := "  " + title + " " + badge
 
-		if isSelected {
-			if isFocused {
-				selectedText := "> " + title + " " + badgePlain
-				selectedText = padRightWidth(truncateRunesNoEllipsis(selectedText, rightInnerWidth), rightInnerWidth)
-				rightBody.WriteString(selectedStyle.Render(selectedText) + "\n")
-			} else {
-				line = "▸ " + title + " " + badgePlain
-				line = padRightWidth(truncateRunesNoEllipsis(line, rightInnerWidth), rightInnerWidth)
-				rightBody.WriteString(projectStyle.Render(line) + "\n")
-			}
+		if isSelected && isFocused {
+			// Only show highlight when focus is on right panel
+			selectedText := "> " + title + " " + badgePlain
+			selectedText = padRightWidth(truncateRunesNoEllipsis(selectedText, rightInnerWidth), rightInnerWidth)
+			rightBody.WriteString(selectedStyle.Render(selectedText) + "\n")
 		} else {
+			// No highlight when focus is on left panel
+			line := "  " + title + " " + badge
 			line = padRightWidth(truncateRunesNoEllipsis(line, rightInnerWidth), rightInnerWidth)
 			rightBody.WriteString(itemStyle.Render(line) + "\n")
 		}
@@ -769,34 +774,43 @@ func (m model) View() string {
 	view := header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel) + "\n" + footer
 
 	if m.showHiddenOverlay && m.hiddenManager != nil {
-		hiddenIDs := m.hiddenManager.List()
-		overlay := m.renderHiddenOverlay(hiddenIDs, width, height)
+		hiddenEntries := m.hiddenManager.List()
+		overlay := m.renderHiddenOverlay(hiddenEntries, width, height)
 		view = lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, view) + overlay
 	}
 
 	return view
 }
 
-func (m model) renderHiddenOverlay(hiddenIDs []string, width, height int) string {
+func (m model) renderHiddenOverlay(hiddenEntries []hidden.HiddenEntry, width, height int) string {
 	overlayWidth := width / 2
-	if overlayWidth < 40 {
-		overlayWidth = 40
+	if overlayWidth < 50 {
+		overlayWidth = 50
 	}
 
 	title := " Hidden Sessions "
-	content := fmt.Sprintf("Hidden (%d):\n\n", len(hiddenIDs))
+	content := fmt.Sprintf("Hidden (%d):\n\n", len(hiddenEntries))
 
-	if len(hiddenIDs) == 0 {
+	if len(hiddenEntries) == 0 {
 		content += "  (no hidden sessions)"
 	} else {
-		for i, id := range hiddenIDs {
+		for i, entry := range hiddenEntries {
 			cursor := "  "
 			if i == m.hiddenCursor {
 				cursor = "> "
 			}
-			content += fmt.Sprintf("%s%s\n", cursor, id)
+			// Truncate title to 35 chars, show first 8 chars of ID
+			titleText := truncateRunes(entry.Title, 35)
+			idShort := entry.ID
+			if len(idShort) > 8 {
+				idShort = idShort[:8]
+			}
+			content += fmt.Sprintf("%s%-35s %s\n", cursor, titleText, idShort)
 		}
 	}
+
+	// Add operation hints
+	content += "\n[r] restore selected  [a] restore all  [esc] close"
 
 	overlayContent := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
