@@ -736,16 +736,19 @@ func (m model) View() string {
 
 		badgePlain := sourceText
 		badgeWidth := runewidth.StringWidth(badgePlain)
-		maxTitle := rightInnerWidth - badgeWidth - 3
-		if maxTitle < 8 {
-			maxTitle = 8
+		// Reserve space for prefix ("  " or "> ") + title + space + badge
+		// Ensure badge is always visible by limiting title length
+		prefixWidth := 2
+		if isSelected && isFocused {
+			prefixWidth = 2 // "> "
+		}
+		spaceWidth := 1 // space between title and badge
+		maxTitle := rightInnerWidth - prefixWidth - badgeWidth - spaceWidth
+		if maxTitle < 0 {
+			maxTitle = 0
 		}
 		title := truncateRunesNoEllipsis(normalizeSingleLine(sess.Title), maxTitle)
 		badge := sourceStyle.Render(badgePlain)
-		leftWidth := rightInnerWidth - badgeWidth
-		if leftWidth < 3 {
-			leftWidth = 3
-		}
 
 		if isSelected && isFocused {
 			// Only show highlight when focus is on right panel
@@ -754,7 +757,7 @@ func (m model) View() string {
 			rightBody.WriteString(selectedStyle.Render(selectedText) + "\n")
 		} else {
 			// No highlight when focus is on left panel
-			line := "  " + title + " " + badge
+			line := "  " + title + " " + badgePlain
 			line = padRightWidth(truncateRunesNoEllipsis(line, rightInnerWidth), rightInnerWidth)
 			rightBody.WriteString(itemStyle.Render(line) + "\n")
 		}

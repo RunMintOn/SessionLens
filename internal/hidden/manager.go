@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -79,6 +80,22 @@ func (m *Manager) loadLocked() error {
 
 	var hidden hiddenData
 	if err := json.Unmarshal(data, &hidden); err != nil {
+		// Backward compatibility: old format was {"hidden":["id1","id2"]}.
+		var legacy struct {
+			Hidden []string `json:"hidden"`
+		}
+		if legacyErr := json.Unmarshal(data, &legacy); legacyErr == nil {
+			m.hiddenMap = make(map[string]HiddenEntry)
+			for _, id := range legacy.Hidden {
+				if id == "" {
+					continue
+				}
+				m.hiddenMap[id] = HiddenEntry{ID: id, Title: id}
+			}
+			m.loaded = true
+			return nil
+		}
+
 		// Corrupt JSON - rename file and start fresh
 		corruptPath := fmt.Sprintf("%s.corrupt-%d", m.filePath, time.Now().Unix())
 		if err := os.Rename(m.filePath, corruptPath); err != nil {
@@ -114,6 +131,9 @@ func (m *Manager) save() error {
 	for _, entry := range m.hiddenMap {
 		hiddenList = append(hiddenList, entry)
 	}
+	sort.Slice(hiddenList, func(i, j int) bool {
+		return hiddenList[i].ID < hiddenList[j].ID
+	})
 
 	data := hiddenData{Hidden: hiddenList}
 	jsonData, err := json.MarshalIndent(data, "", "  ")
@@ -230,5 +250,8 @@ func (m *Manager) List() []HiddenEntry {
 	for _, entry := range m.hiddenMap {
 		result = append(result, entry)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ID < result[j].ID
+	})
 	return result
 }
