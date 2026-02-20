@@ -274,3 +274,61 @@ Added explicit branch in `Scan()`:
 ### Verification
 - `go test ./session -run ScanAll -v` - PASSED (6/6)
 - `go build ./session/` - PASSED
+
+---
+
+## Task 3.1: UI Beautification - Lip Gloss Borders and Panels
+
+### Modified Files
+- `cmd/session-manager/main.go` - Added Lip Gloss panel styling
+
+### Implementation Details
+- **Colors Added**:
+  - `bgColor = #1E1E1E` (dark gray background)
+  - `borderColor = #3C3C3C` (gray border)
+  - `textColor = #FAFAFA` (white text)
+  - `selectedColor = #569CD6` (blue highlight)
+
+- **New Styles**:
+  - `panelStyle`: Rounded border, dark background, padding
+  - `headerPanelStyle`: Top rounded border only
+  - `footerPanelStyle`: Bottom and sides rounded border
+
+- **View Updates**:
+  - Header wrapped in `headerPanelStyle`
+  - Session list wrapped in `panelStyle`
+  - Footer wrapped in `footerPanelStyle`
+  - Selected item uses `selectedColor` (#569CD6 blue)
+
+### Key Decisions
+- Used `lipgloss.RoundedBorder()` for Mac-like terminal aesthetic
+- Selective borders (top-only for header, bottom+sides for footer) for panel effect
+- Kept original color constants for source colors (openCode, claude, qwen)
+- Only visual changes, no functional changes to model/Update
+
+### Verification
+- `go build ./cmd/session-manager` - PASSED
+- No lsp_diagnostics errors
+
+---
+
+## Task 4.1: Session Recovery (tmux attach)
+
+### Modified Files
+- `cmd/session-manager/main.go` - Added Enter key handling for tmux attach
+
+### Implementation Details
+- **Import Added**: `os/exec` for executing tmux command
+- **Key Handling**: "enter" case in Update switch statement
+- **tmux Command**: `exec.Command("tmux", "attach-session", "-t", sessionID)`
+- **Session ID**: Uses `m.sessions[m.cursor].id` (OpenCode/Claude/Qwen session IDs work directly as tmux session names)
+- **Footer Updated**: Added "Enter attach" hint
+
+### Key Decisions
+- Session ID from scanner matches tmux session name (ses_xxx format)
+- `cmd.Stdin/Stdout/Stderr` set to os.* for proper terminal attachment
+- `tea.Quit` called after tmux command to exit the TUI
+
+### Verification
+- `go build ./cmd/session-manager` - PASSED
+- No lsp_diagnostics errors
