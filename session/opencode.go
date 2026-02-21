@@ -108,14 +108,19 @@ func int64FromInterface(v interface{}) int64 {
 	if v == nil {
 		return 0
 	}
+	var ts int64
 	switch val := v.(type) {
 	case int64:
-		return val
+		ts = val
 	case int:
-		return int64(val)
+		ts = int64(val)
 	case float64:
-		return int64(val)
+		ts = int64(val)
 	default:
 		return 0
 	}
+	if ts > 1_000_000_000_000 {
+		return ts / 1000
+	}
+	return ts
 }

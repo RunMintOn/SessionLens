@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // QwenScanner scans for Qwen Code sessions from JSONL files.
@@ -180,20 +182,35 @@ func (s *QwenScanner) extractTimestamp(ts any) int64 {
 	}
 	switch v := ts.(type) {
 	case float64:
-		return int64(v)
+		return normalizeUnixMaybeMillisQwen(int64(v))
 	case int64:
-		return v
+		return normalizeUnixMaybeMillisQwen(v)
 	case int:
-		return int64(v)
+		return normalizeUnixMaybeMillisQwen(int64(v))
 	case string:
-		// Try to parse as integer
-		var result int64
-		for _, c := range v {
-			if c >= '0' && c <= '9' {
-				result = result*10 + int64(c-'0')
-			}
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return 0
 		}
-		return result
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return t.Unix()
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t.Unix()
+		}
+		if parsed, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return normalizeUnixMaybeMillisQwen(parsed)
+		}
 	}
 	return 0
+}
+
+func normalizeUnixMaybeMillisQwen(ts int64) int64 {
+	if ts <= 0 {
+		return 0
+	}
+	if ts > 1_000_000_000_000 {
+		return ts / 1000
+	}
+	return ts
 }

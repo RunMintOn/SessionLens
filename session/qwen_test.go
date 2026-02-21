@@ -199,6 +199,17 @@ func TestQwenScanner_UsesCwdAsProjectPath(t *testing.T) {
 	if sessions[0].ProjectPath != "/home/lee/11MyProjrct/projectA" {
 		t.Fatalf("expected cwd project path, got '%s'", sessions[0].ProjectPath)
 	}
+	if sessions[0].LastUpdated != 1771435002 {
+		t.Fatalf("expected parsed RFC3339 timestamp 1771435002, got %d", sessions[0].LastUpdated)
+	}
+}
+
+func TestQwenScanner_ExtractTimestamp_MillisecondString(t *testing.T) {
+	scanner := &QwenScanner{}
+	got := scanner.extractTimestamp("1700000000123")
+	if got != 1700000000 {
+		t.Fatalf("expected 1700000000, got %d", got)
+	}
 }
 
 func TestQwenScanner_EmptyBasePath(t *testing.T) {

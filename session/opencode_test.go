@@ -233,3 +233,41 @@ func TestOpenCodeScanner_NewOpenCodeScanner(t *testing.T) {
 		t.Errorf("expected DBPath %s, got %s", expectedPath, scanner.DBPath)
 	}
 }
+
+func TestOpenCodeScanner_Scan_MillisecondTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS session (
+			id INTEGER PRIMARY KEY,
+			title TEXT,
+			directory TEXT,
+			time_updated INTEGER,
+			parent_id INTEGER
+		);
+		INSERT INTO session (id, title, directory, time_updated, parent_id) VALUES
+		(1, 'Millis Session', '/path/to/project', 1700000000123, NULL);
+	`)
+	if err != nil {
+		t.Fatalf("failed to setup db: %v", err)
+	}
+
+	scanner := &OpenCodeScanner{DBPath: dbPath}
+	sessions, err := scanner.Scan("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].LastUpdated != 1700000000 {
+		t.Fatalf("expected normalized seconds 1700000000, got %d", sessions[0].LastUpdated)
+	}
+}
