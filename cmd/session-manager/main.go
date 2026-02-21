@@ -18,6 +18,38 @@ import (
 	"agent-session-manager/session"
 )
 
+type launcherConfig struct {
+	TerminalCmd        string
+	WSLEntryCmd        string
+	WSLShell           string
+	RestoreCmdClaude   string
+	RestoreCmdOpenCode string
+	RestoreCmdQwen     string
+	RestoreCmdCodex    string
+}
+
+var launcherCfg = loadLauncherConfigFromEnv()
+
+func envOrDefault(key, def string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+func loadLauncherConfigFromEnv() launcherConfig {
+	return launcherConfig{
+		TerminalCmd:        envOrDefault("ASM_TERMINAL_CMD", "wt"),
+		WSLEntryCmd:        envOrDefault("ASM_WSL_ENTRY_CMD", "wsl.exe"),
+		WSLShell:           envOrDefault("ASM_WSL_SHELL", "zsh -lic"),
+		RestoreCmdClaude:   envOrDefault("ASM_RESTORE_CMD_CLAUDE", "claude -r {id}"),
+		RestoreCmdOpenCode: envOrDefault("ASM_RESTORE_CMD_OPENCODE", "opencode -s {id}"),
+		RestoreCmdQwen:     envOrDefault("ASM_RESTORE_CMD_QWEN", "qwen -r {id}"),
+		RestoreCmdCodex:    envOrDefault("ASM_RESTORE_CMD_CODEX", "codex resume {id}"),
+	}
+}
+
 var (
 	openCodeColor = lipgloss.Color("#86EFAC")
 	claudeColor   = lipgloss.Color("#FDBA74")
@@ -337,19 +369,27 @@ func shellQuoteSingle(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-func restoreCommandForSession(sess session.Session) (string, error) {
+func restoreTemplateForSession(sess session.Session, cfg launcherConfig) (string, error) {
 	switch sess.SourceTool {
 	case session.SourceClaude:
-		return "claude -r " + shellQuoteSingle(sess.ID), nil
+		return cfg.RestoreCmdClaude, nil
 	case session.SourceOpenCode:
-		return "opencode -s " + shellQuoteSingle(sess.ID), nil
+		return cfg.RestoreCmdOpenCode, nil
 	case session.SourceQwen:
-		return "qwen -r " + shellQuoteSingle(sess.ID), nil
+		return cfg.RestoreCmdQwen, nil
 	case session.SourceCodex:
-		return "codex resume " + shellQuoteSingle(sess.ID), nil
+		return cfg.RestoreCmdCodex, nil
 	default:
 		return "", fmt.Errorf("unsupported source tool: %s", sess.SourceTool)
 	}
+}
+
+func renderTemplate(template string, values map[string]string) string {
+	rendered := template
+	for key, value := range values {
+		rendered = strings.ReplaceAll(rendered, "{"+key+"}", value)
+	}
+	return rendered
 }
 
 func shouldUseWSL(projectPath string) bool {
@@ -362,12 +402,22 @@ func shouldUseWSL(projectPath string) bool {
 	return false
 }
 
-func windowsTerminalBinary() (string, error) {
-	if _, err := exec.LookPath("wt"); err == nil {
-		return "wt", nil
+func commandBinary(command string) (string, error) {
+	if strings.Contains(command, "/") || strings.Contains(command, "\\") {
+		if info, err := os.Stat(command); err == nil && !info.IsDir() {
+			return command, nil
+		}
+		return "", fmt.Errorf("%s not found", command)
 	}
-	if _, err := exec.LookPath("wt.exe"); err == nil {
-		return "wt.exe", nil
+	if path, err := exec.LookPath(command); err == nil {
+		return path, nil
+	}
+	return "", fmt.Errorf("%s not found in PATH", command)
+}
+
+func windowsTerminalBinary(cfg launcherConfig) (string, error) {
+	if path, err := commandBinary(cfg.TerminalCmd); err == nil {
+		return path, nil
 	}
 
 	candidates, err := filepath.Glob("/mnt/c/Users/*/AppData/Local/Microsoft/WindowsApps/wt.exe")
@@ -414,20 +464,44 @@ func ensureWindowsInteropAvailable() error {
 	return nil
 }
 
+func resolveRestoreScript(sess session.Session, cfg launcherConfig) (string, error) {
+	projectPath := filepath.Clean(sess.ProjectPath)
+	template, err := restoreTemplateForSession(sess, cfg)
+	if err != nil {
+		return "", err
+	}
+	replaceValues := map[string]string{
+		"id":      shellQuoteSingle(sess.ID),
+		"project": shellQuoteSingle(projectPath),
+	}
+	restoreCmd := renderTemplate(template, replaceValues)
+	if strings.Contains(restoreCmd, "{") || strings.Contains(restoreCmd, "}") {
+		return "", fmt.Errorf("invalid restore command template: unresolved placeholder")
+	}
+	return "cd " + shellQuoteSingle(projectPath) + " && " + restoreCmd, nil
+}
+
+func wslShellArgs(cfg launcherConfig) ([]string, error) {
+	parts := strings.Fields(cfg.WSLShell)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("invalid WSL shell command")
+	}
+	return parts, nil
+}
+
 func launchSession(sess session.Session) error {
 	if strings.TrimSpace(sess.ProjectPath) == "" {
 		return fmt.Errorf("missing project path for session %s", sess.ID)
 	}
 
-	restoreCmd, err := restoreCommandForSession(sess)
+	script, err := resolveRestoreScript(sess, launcherCfg)
 	if err != nil {
 		return err
 	}
 
 	projectPath := filepath.Clean(sess.ProjectPath)
-	script := "cd " + shellQuoteSingle(projectPath) + " && " + restoreCmd
 
-	wtBin, err := windowsTerminalBinary()
+	wtBin, err := windowsTerminalBinary(launcherCfg)
 	if err != nil {
 		return err
 	}
@@ -437,7 +511,14 @@ func launchSession(sess session.Session) error {
 
 	var wtCmd *exec.Cmd
 	if shouldUseWSL(projectPath) {
-		wtCmd = exec.Command(wtBin, "wsl.exe", "-e", "zsh", "-lic", script)
+		wslShell, err := wslShellArgs(launcherCfg)
+		if err != nil {
+			return err
+		}
+		args := []string{launcherCfg.WSLEntryCmd, "-e"}
+		args = append(args, wslShell...)
+		args = append(args, script)
+		wtCmd = exec.Command(wtBin, args...)
 	} else {
 		wtCmd = exec.Command(wtBin, "sh", "-lc", script)
 	}
@@ -1069,7 +1150,93 @@ func runShellAtPath(projectPath string) error {
 	return cmd.Run()
 }
 
+func commandFromTemplate(template string) string {
+	expanded := strings.ReplaceAll(template, "{id}", "x")
+	expanded = strings.ReplaceAll(expanded, "{project}", "x")
+	fields := strings.Fields(expanded)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func commandAvailability(command string) string {
+	if command == "" {
+		return "missing"
+	}
+	if path, err := commandBinary(command); err == nil {
+		return "ok (" + path + ")"
+	}
+	return "missing"
+}
+
+func windowsSystemBinary(name string) (string, error) {
+	path := filepath.Join("/mnt/c/Windows/System32", name)
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return path, nil
+	}
+	return "", fmt.Errorf("%s not found in /mnt/c/Windows/System32", name)
+}
+
+func runDoctor() int {
+	cfg := launcherCfg
+	inWSL := os.Getenv("WSL_DISTRO_NAME") != ""
+
+	fmt.Println("Agent Session Manager Doctor")
+	fmt.Println("============================")
+	fmt.Printf("Environment: WSL=%t\n", inWSL)
+	fmt.Println()
+	fmt.Println("Active launcher config:")
+	fmt.Printf("  ASM_TERMINAL_CMD=%s\n", cfg.TerminalCmd)
+	fmt.Printf("  ASM_WSL_ENTRY_CMD=%s\n", cfg.WSLEntryCmd)
+	fmt.Printf("  ASM_WSL_SHELL=%s\n", cfg.WSLShell)
+	fmt.Printf("  ASM_RESTORE_CMD_CLAUDE=%s\n", cfg.RestoreCmdClaude)
+	fmt.Printf("  ASM_RESTORE_CMD_OPENCODE=%s\n", cfg.RestoreCmdOpenCode)
+	fmt.Printf("  ASM_RESTORE_CMD_QWEN=%s\n", cfg.RestoreCmdQwen)
+	fmt.Printf("  ASM_RESTORE_CMD_CODEX=%s\n", cfg.RestoreCmdCodex)
+	fmt.Println()
+	fmt.Println("Checks:")
+
+	terminalStatus := "missing"
+	if bin, err := windowsTerminalBinary(cfg); err == nil {
+		terminalStatus = "ok (" + bin + ")"
+	}
+	fmt.Printf("  terminal binary: %s\n", terminalStatus)
+
+	if inWSL {
+		interopStatus := "ok"
+		if err := ensureWindowsInteropAvailable(); err != nil {
+			interopStatus = "error (" + err.Error() + ")"
+		}
+		fmt.Printf("  windows interop: %s\n", interopStatus)
+	}
+
+	wslStatus := commandAvailability(cfg.WSLEntryCmd)
+	if strings.EqualFold(cfg.WSLEntryCmd, "wsl.exe") && wslStatus == "missing" {
+		if path, err := windowsSystemBinary("wsl.exe"); err == nil {
+			wslStatus = "ok (" + path + ")"
+		}
+	}
+	fmt.Printf("  wsl entry command: %s\n", wslStatus)
+	if shellArgs, err := wslShellArgs(cfg); err != nil {
+		fmt.Printf("  wsl shell command: error (%s)\n", err.Error())
+	} else {
+		fmt.Printf("  wsl shell command: %s\n", commandAvailability(shellArgs[0]))
+	}
+	fmt.Printf("  claude command: %s\n", commandAvailability(commandFromTemplate(cfg.RestoreCmdClaude)))
+	fmt.Printf("  opencode command: %s\n", commandAvailability(commandFromTemplate(cfg.RestoreCmdOpenCode)))
+	fmt.Printf("  qwen command: %s\n", commandAvailability(commandFromTemplate(cfg.RestoreCmdQwen)))
+	fmt.Printf("  codex command: %s\n", commandAvailability(commandFromTemplate(cfg.RestoreCmdCodex)))
+	fmt.Println()
+	fmt.Println("Tip: export ASM_* vars in your shell profile to customize launcher behavior.")
+	return 0
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--doctor" {
+		os.Exit(runDoctor())
+	}
+
 	hiddenManager, err := hidden.NewManager("agent-session-manager")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to initialize hidden manager: %v\n", err)
