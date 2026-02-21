@@ -238,7 +238,8 @@ async function installBinary(targetPath) {
   }
 
   const asset = platformAsset();
-  let tag = process.env.ASM_RELEASE_TAG || releaseTag(pkg.version);
+  const explicitTag = process.env.ASM_RELEASE_TAG;
+  let tag = explicitTag || releaseTag(pkg.version);
   let downloaded;
   let firstErr;
 
@@ -251,6 +252,16 @@ async function installBinary(targetPath) {
   }
 
   if (!downloaded) {
+    const allowLatestFallback = process.env.ASM_ALLOW_LATEST_FALLBACK === "1";
+    if (!allowLatestFallback) {
+      if (firstErr) {
+        throw new Error(
+          `${firstErr.message}; latest fallback disabled to avoid version drift (set ASM_ALLOW_LATEST_FALLBACK=1 to enable)`,
+        );
+      }
+      throw new Error("release asset download failed and latest fallback is disabled");
+    }
+
     try {
       const latestTag = await getLatestReleaseTag(repo);
       if (!latestTag) {
@@ -299,7 +310,7 @@ async function ensureBinary(binaryPath) {
     return { installed: false, targetPath: binaryPath };
   }
 
-  if (process.env.ASM_SKIP_BOOTSTRAP === "1" || process.env.ASM_SKIP_POSTINSTALL === "1") {
+  if (process.env.ASM_SKIP_BOOTSTRAP === "1") {
     throw new Error("binary is missing and bootstrap is disabled (ASM_SKIP_BOOTSTRAP=1)");
   }
 
