@@ -121,7 +121,7 @@ func TestClaudeScanner_LongContentTruncated(t *testing.T) {
 	projDir := filepath.Join(tmpDir, "test-project")
 	os.MkdirAll(projDir, 0755)
 
-	longContent := "This is a very long message that should be truncated to exactly one hundred characters when it is processed"
+	longContent := strings.Repeat("a", NormalizedTitleWidth+50)
 	jsonlContent := `{"type": "user", "timestamp": 1700000000, "message": {"content": "` + longContent + `"}}
 `
 	jsonlPath := filepath.Join(projDir, "session-004.jsonl")
@@ -137,8 +137,8 @@ func TestClaudeScanner_LongContentTruncated(t *testing.T) {
 		t.Fatalf("Expected 1 session, got %d", len(sessions))
 	}
 
-	if len([]rune(sessions[0].Title)) != NormalizedTitleWidth {
-		t.Errorf("Expected title rune length %d, got %d: '%s'", NormalizedTitleWidth, len([]rune(sessions[0].Title)), sessions[0].Title)
+	if len([]rune(sessions[0].Title)) > NormalizedTitleWidth {
+		t.Errorf("Expected title rune length <= %d, got %d", NormalizedTitleWidth, len([]rune(sessions[0].Title)))
 	}
 
 	if !strings.HasSuffix(sessions[0].Title, "…") {

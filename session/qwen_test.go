@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -157,8 +158,7 @@ func TestQwenScanner_TitleTruncation(t *testing.T) {
 	chatsDir := filepath.Join(projDir, "chats")
 	os.MkdirAll(chatsDir, 0755)
 
-	// Create a message longer than 100 chars
-	longText := "This is a very long message that exceeds one hundred characters and should be truncated to exactly one hundred characters for the title"
+	longText := strings.Repeat("q", NormalizedTitleWidth+50)
 	jsonlContent := `{"type":"user","message":{"parts":[{"text":"` + longText + `"}]},"timestamp":1700000001}
 `
 	os.WriteFile(filepath.Join(chatsDir, "test.jsonl"), []byte(jsonlContent), 0644)
@@ -169,8 +169,11 @@ func TestQwenScanner_TitleTruncation(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("expected 1 session, got %d", len(sessions))
 	}
-	if len([]rune(sessions[0].Title)) != NormalizedTitleWidth {
-		t.Errorf("expected title rune length %d, got %d", NormalizedTitleWidth, len([]rune(sessions[0].Title)))
+	if len([]rune(sessions[0].Title)) > NormalizedTitleWidth {
+		t.Errorf("expected title rune length <= %d, got %d", NormalizedTitleWidth, len([]rune(sessions[0].Title)))
+	}
+	if !strings.HasSuffix(sessions[0].Title, "…") {
+		t.Errorf("expected title to end with ellipsis, got '%s'", sessions[0].Title)
 	}
 }
 

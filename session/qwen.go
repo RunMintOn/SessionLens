@@ -137,9 +137,6 @@ func (s *QwenScanner) parseSession(jsonlPath, projectDir string) *Session {
 				if partMap, ok := part.(map[string]any); ok {
 					if text, ok := partMap["text"].(string); ok {
 						firstUserMessage = text
-						if len(firstUserMessage) > 100 {
-							firstUserMessage = firstUserMessage[:100]
-						}
 						break
 					}
 				}
