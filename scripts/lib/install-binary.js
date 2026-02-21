@@ -333,7 +333,7 @@ async function ensureBinary(binaryPath) {
 
 function formatBootstrapError(err) {
   const message = err && err.message ? err.message : String(err);
-  const suggestedTag = releaseTag(pkg && pkg.version ? pkg.version : "0.1.2");
+  const suggestedTag = releaseTag(pkg && pkg.version ? pkg.version : "0.1.3");
   return [
     `[agent-manager] bootstrap failed: ${message}`,
     "[agent-manager] Try:",

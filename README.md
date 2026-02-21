@@ -33,7 +33,7 @@ Install once, run anywhere (GitHub source):
 Stable release (recommended):
 
 ```bash
-npm i -g github:RunMintOn/SessionLens#v0.1.2
+npm i -g github:RunMintOn/SessionLens#v0.1.3
 agent-manager
 ```
 
@@ -100,7 +100,7 @@ export ASM_RESTORE_CMD_QWEN="qwen --resume {id}"
 Install/bootstrap-specific environment variables:
 
 - `ASM_RELEASE_REPO` (override GitHub release repo, format `OWNER/REPO`)
-- `ASM_RELEASE_TAG` (pin a release tag, e.g. `v0.1.2`)
+- `ASM_RELEASE_TAG` (pin a release tag, e.g. `v0.1.3`)
 - `ASM_RELEASE_BASE_URL` (use custom release mirror base URL)
 - `ASM_ALLOW_LATEST_FALLBACK=1` (allow fallback to latest release when pinned tag download fails)
 - `ASM_SKIP_BOOTSTRAP=1` (disable first-run binary download)
@@ -238,7 +238,7 @@ Success criteria:
 - `windows interop unavailable`: WSL cannot spawn Windows processes in current environment.
 - `qwen: not found` (or similar): ensure command is available in configured shell, or override restore command via `ASM_RESTORE_CMD_*`.
 - `bootstrap failed` on first run: check network access to GitHub, or pin a valid release tag:
-  - `ASM_RELEASE_TAG=v0.1.2 agent-manager`
+  - `ASM_RELEASE_TAG=v0.1.3 agent-manager`
   - `ASM_ALLOW_LATEST_FALLBACK=1 agent-manager` (for bleeding-edge installs only)
   - `ASM_RELEASE_BASE_URL=<mirror-url> agent-manager`
 
@@ -252,7 +252,7 @@ go test ./...
 
 This repo includes a tag-based release pipeline (`.github/workflows/release.yml`):
 
-1. Push a tag like `v0.1.2`.
+1. Push a tag like `v0.1.3`.
 2. CI builds and uploads:
    - `agent-manager-linux-amd64`
    - `agent-manager-windows-amd64.exe`
