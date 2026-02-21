@@ -325,11 +325,10 @@ var (
 				BorderForeground(selectedColor)
 
 	searchInactiveStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#9CA3AF")).
+				Foreground(lipgloss.Color("#CBD5E1")).
 				Padding(0, 1).
 				Border(lipgloss.NormalBorder()).
-				BorderForeground(borderColor).
-				Faint(true)
+				BorderForeground(lipgloss.Color("#475569"))
 
 	filterActiveStyle = lipgloss.NewStyle().
 				Bold(true).
@@ -349,6 +348,7 @@ const (
 	rightPanelMinWidth   = 30
 	projectCardRowHeight = 3 // title + meta + spacer
 	sessionCardRowHeight = 2 // compact list with slight breathing room
+	panelVerticalGaps    = 2 // header->panels and panels->footer separators
 )
 
 type rowKind int
@@ -1192,6 +1192,38 @@ func renderSessionCard(sess session.Session, innerWidth int, isSelected, isFocus
 	return itemStyle.Render(line)
 }
 
+func renderSearchLine(searchValue string, width int, active bool) string {
+	searchWidth := width - 2
+	if searchWidth < 10 {
+		searchWidth = 10
+	}
+
+	searchStyle := searchInactiveStyle
+	if active {
+		searchStyle = searchActiveStyle
+	}
+
+	innerWidth := searchWidth - searchStyle.GetHorizontalFrameSize()
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+
+	prefixPlain := "SEARCH> "
+	prefixWidth := runewidth.StringWidth(prefixPlain)
+	valueWidth := innerWidth - prefixWidth
+	if valueWidth < 0 {
+		valueWidth = 0
+	}
+
+	plainValue := truncateRunes(searchValue, valueWidth)
+	plainContent := prefixPlain + plainValue
+	plainContent = padRightWidth(plainContent, innerWidth)
+
+	// Keep the prefix accent color while still measuring width using plain text.
+	renderedPrefix := searchPrefixStyle.Render(prefixPlain)
+	return searchStyle.Width(searchWidth).Render(renderedPrefix + plainContent[len(prefixPlain):])
+}
+
 func (m model) View() string {
 	width := m.width
 	height := m.height
@@ -1206,16 +1238,7 @@ func (m model) View() string {
 	if searchValue == "" && !m.searchActive {
 		searchValue = "/ to search"
 	}
-	searchWidth := width - 2
-	if searchWidth < 10 {
-		searchWidth = 10
-	}
-	searchContent := searchPrefixStyle.Render("SEARCH> ") + truncateRunes(searchValue, max(0, width-12))
-	searchStyle := searchInactiveStyle
-	if m.searchActive {
-		searchStyle = searchActiveStyle
-	}
-	searchLine := searchStyle.Width(searchWidth).Render(searchContent)
+	searchLine := renderSearchLine(searchValue, width, m.searchActive)
 	headerDivider := lipgloss.NewStyle().
 		Foreground(borderColor).
 		Faint(true).
@@ -1254,9 +1277,9 @@ func (m model) View() string {
 
 	headerHeight := lipgloss.Height(header)
 	footerHeight := lipgloss.Height(footer)
-	contentHeight := height - headerHeight - footerHeight
-	if contentHeight < 3 {
-		contentHeight = 3
+	contentHeight := height - headerHeight - footerHeight - panelVerticalGaps
+	if contentHeight < 1 {
+		contentHeight = 1
 	}
 
 	// Split width into left and right panels
@@ -1324,7 +1347,11 @@ func (m model) View() string {
 		leftBody.WriteString(lipgloss.NewStyle().Foreground(leftMutedColor).Render("  ↓ more") + "\n")
 	}
 
-	leftPanel := panelStyle.Width(leftPanelWidth).Height(contentHeight).Render(leftBody.String())
+	leftPanel := panelStyle.
+		Width(leftPanelWidth).
+		Height(contentHeight).
+		MaxHeight(contentHeight).
+		Render(leftBody.String())
 
 	// Build right panel (sessions for selected project)
 	var rightBody strings.Builder
@@ -1373,7 +1400,11 @@ func (m model) View() string {
 		rightBody.WriteString(lipgloss.NewStyle().Foreground(rightMutedColor).Render("  ↓ more") + "\n")
 	}
 
-	rightPanel := panelStyle.Width(rightPanelWidth).Height(contentHeight).Render(rightBody.String())
+	rightPanel := panelStyle.
+		Width(rightPanelWidth).
+		Height(contentHeight).
+		MaxHeight(contentHeight).
+		Render(rightBody.String())
 
 	// Join panels horizontally
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 
 	"agent-session-manager/session"
 )
@@ -229,4 +232,80 @@ func TestBuildDoctorReport_HasStableSchema(t *testing.T) {
 	if _, ok := report.Checks["tools"]; !ok {
 		t.Fatal("expected tools checks in doctor report")
 	}
+}
+
+func TestRenderSearchLine_StableHeight(t *testing.T) {
+	width := 120
+	cases := []struct {
+		name   string
+		query  string
+		active bool
+	}{
+		{name: "inactive placeholder", query: "/ to search", active: false},
+		{name: "inactive long", query: strings.Repeat("search-", 40), active: false},
+		{name: "active short", query: "abc", active: true},
+		{name: "active cjk", query: "这是一个非常长的搜索词 mixed with english", active: true},
+	}
+
+	expected := 0
+	for _, tc := range cases {
+		line := renderSearchLine(tc.query, width, tc.active)
+		height := lipgloss.Height(line)
+		if expected == 0 {
+			expected = height
+		}
+		if height != expected {
+			t.Fatalf("%s: expected stable height %d, got %d", tc.name, expected, height)
+		}
+	}
+}
+
+func TestView_StableHeightAcrossProjectScrollStates(t *testing.T) {
+	m := model{
+		sessions:     buildRenderTestSessions(24),
+		width:        100,
+		height:       20,
+		focusPanel:   focusLeft,
+		query:        "",
+		searchActive: false,
+	}
+
+	positions := []int{0, 1, 8, 16, 23}
+	expectedHeight := 0
+
+	for _, pos := range positions {
+		m.projectCursor = pos
+		m.clampProjectCursor()
+		m.sessionCursor = 0
+
+		view := m.View()
+		got := lipgloss.Height(view)
+		if expectedHeight == 0 {
+			expectedHeight = got
+		}
+		if got != expectedHeight {
+			t.Fatalf("cursor %d: expected stable view height %d, got %d", pos, expectedHeight, got)
+		}
+		if got > m.height {
+			t.Fatalf("cursor %d: expected view height <= %d, got %d", pos, m.height, got)
+		}
+		if !strings.Contains(view, "SEARCH>") {
+			t.Fatalf("cursor %d: expected search line to be rendered", pos)
+		}
+	}
+}
+
+func buildRenderTestSessions(projectCount int) []session.Session {
+	sessions := make([]session.Session, 0, projectCount)
+	base := int64(1700000000)
+	for i := 0; i < projectCount; i++ {
+		sessions = append(sessions, session.Session{
+			ID:          fmt.Sprintf("sid-%02d", i),
+			Title:       fmt.Sprintf("Project session %02d", i),
+			SourceTool:  session.SourceOpenCode,
+			ProjectPath: fmt.Sprintf("/tmp/proj-%02d", i),
+			LastUpdated: base - int64(i),
+		})
+	}
+	return sessions
 }
