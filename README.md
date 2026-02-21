@@ -28,14 +28,7 @@ This release is optimized for WSL-first workflows. The session restore path is:
 
 ## Quick Install (Global Command)
 
-Install once, run anywhere:
-
-```bash
-npm i -g agent-session-manager
-agent-manager
-```
-
-Install directly from GitHub tag (without npm registry):
+Install once, run anywhere (GitHub source):
 
 ```bash
 npm i -g github:RunMintOn/SessionLens#v0.1.0
@@ -242,5 +235,4 @@ This repo includes a tag-based release pipeline (`.github/workflows/release.yml`
    - `agent-manager-linux-amd64`
    - `agent-manager-windows-amd64.exe`
    - `checksums.txt`
-3. If `NPM_TOKEN` is configured, CI publishes the root npm package as `agent-session-manager`.
-4. npm publish step auto-injects `GITHUB_REPOSITORY` into package metadata and release download source.
+3. Users install directly from GitHub tag via `npm i -g github:RunMintOn/SessionLens#vX.Y.Z`.

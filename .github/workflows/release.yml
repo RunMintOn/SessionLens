@@ -43,36 +43,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/release/*
-
-  publish-npm:
-    runs-on: ubuntu-latest
-    needs: publish-release
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
-
-      - name: Sync npm version with git tag
-        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
-
-      - name: Inject repository metadata for npm package
-        run: |
-          npm pkg set config.releaseRepo="${GITHUB_REPOSITORY}"
-          npm pkg set repository.url="https://github.com/${GITHUB_REPOSITORY}.git"
-          npm pkg set homepage="https://github.com/${GITHUB_REPOSITORY}"
-          npm pkg set bugs.url="https://github.com/${GITHUB_REPOSITORY}/issues"
-
-      - name: Publish npm package
-        if: ${{ env.NODE_AUTH_TOKEN != '' }}
-        run: npm publish --access public
-
-      - name: Skip npm publish (missing NPM_TOKEN)
-        if: ${{ env.NODE_AUTH_TOKEN == '' }}
-        run: echo "NPM_TOKEN is not configured; skipping npm publish."
