@@ -96,6 +96,7 @@ const (
 type model struct {
 	sessions          []session.Session
 	query             string
+	searchActive      bool
 	width             int
 	height            int
 	hiddenManager     *hidden.Manager
@@ -109,11 +110,11 @@ type model struct {
 	statusMessage      string
 
 	// dual-pane navigation
-	focusPanel       focusPanel
-	projectCursor    int
-	sessionCursor    int
-	projectScrollOffset  int
-	sessionScrollOffset  int
+	focusPanel          focusPanel
+	projectCursor       int
+	sessionCursor       int
+	projectScrollOffset int
+	sessionScrollOffset int
 }
 
 type groupedSession struct {
@@ -419,9 +420,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.searchActive {
+			switch msg.Type {
+			case tea.KeyCtrlC:
+				return m, tea.Quit
+			case tea.KeyEsc:
+				m.searchActive = false
+				if m.query != "" {
+					m.query = ""
+					m.projectCursor = 0
+					m.sessionCursor = 0
+					m.statusMessage = "search cleared"
+				}
+				m.clearProjectConfirm()
+				return m, nil
+			case tea.KeyBackspace, tea.KeyCtrlH:
+				queryRunes := []rune(m.query)
+				if len(queryRunes) > 0 {
+					m.query = string(queryRunes[:len(queryRunes)-1])
+					m.projectCursor = 0
+					m.sessionCursor = 0
+				}
+				m.clearProjectConfirm()
+				return m, nil
+			}
+
+			if typed := keyToText(msg); typed != "" {
+				m.query += typed
+				m.projectCursor = 0
+				m.sessionCursor = 0
+				m.clearProjectConfirm()
+				m.statusMessage = ""
+				return m, nil
+			}
+
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q":
 			return m, tea.Quit
+		case "/":
+			m.searchActive = true
+			m.statusMessage = ""
+			m.clearProjectConfirm()
+			return m, nil
 		case "1":
 			m.sourceFilter = ""
 			m.projectCursor = 0
@@ -483,21 +526,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
 		case tea.KeyEsc:
-			if m.query != "" {
-				m.query = ""
-				m.projectCursor = 0
-				m.sessionCursor = 0
-				m.statusMessage = "search cleared"
-			}
-			m.clearProjectConfirm()
-			return m, nil
-		case tea.KeyBackspace, tea.KeyCtrlH:
-			queryRunes := []rune(m.query)
-			if len(queryRunes) > 0 {
-				m.query = string(queryRunes[:len(queryRunes)-1])
-				m.projectCursor = 0
-				m.sessionCursor = 0
-			}
 			m.clearProjectConfirm()
 			return m, nil
 		case tea.KeyUp:
@@ -568,15 +596,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampSessionCursor()
 			return m, nil
 		}
-
-		if typed := keyToText(msg); typed != "" {
-			m.query += typed
-			m.projectCursor = 0
-			m.sessionCursor = 0
-			m.clearProjectConfirm()
-			m.statusMessage = ""
-			return m, nil
-		}
 	}
 
 	return m, nil
@@ -613,8 +632,8 @@ func (m model) View() string {
 	}
 
 	searchValue := normalizeSingleLine(m.query)
-	if searchValue == "" {
-		searchValue = "Type to search"
+	if searchValue == "" && !m.searchActive {
+		searchValue = "/ to search"
 	}
 	searchLine := searchLineStyle.Width(width - 2).Render("SEARCH> " + truncateRunes(searchValue, width-12))
 
@@ -624,9 +643,11 @@ func (m model) View() string {
 		m.renderFilterRow(),
 	}, "\n")
 
-	footerText := "←/→ switch  ↑/k move  ↓/j move  Enter open  Esc clear search  q quit  1-4 filter  h hide  H hidden"
-	if m.query != "" {
-		footerText = "SEARCH  |  " + normalizeSingleLine(m.query) + "  |  ←/→ switch  ↑/k move  ↓/j move  Enter open  Esc clear search"
+	footerText := "←/→ switch  ↑/k move  ↓/j move  Enter open  / search  q quit  1-4 filter  h hide  H hidden"
+	if m.searchActive {
+		footerText = "SEARCH INPUT  |  type to search  |  Esc clear & exit search"
+	} else if m.query != "" {
+		footerText = "SEARCH FILTER  |  " + normalizeSingleLine(m.query) + "  |  / edit  Esc keeps filter"
 	}
 	if m.confirmProjectPath != "" && time.Now().Before(m.confirmExpiresAt) {
 		footerText = fmt.Sprintf("CONFIRM  |  Press Enter again within 2s to open shell at %s", simplifyPath(m.confirmProjectPath))
@@ -939,14 +960,15 @@ func main() {
 	}
 
 	m := model{
-		sessions:          collectSessions(),
-		hiddenManager:     hiddenManager,
-		showHiddenOverlay: false,
-		hiddenCursor:      0,
-		sourceFilter:      "",
-		focusPanel:        focusLeft,
-		projectCursor:     0,
-		sessionCursor:     0,
+		sessions:            collectSessions(),
+		searchActive:        false,
+		hiddenManager:       hiddenManager,
+		showHiddenOverlay:   false,
+		hiddenCursor:        0,
+		sourceFilter:        "",
+		focusPanel:          focusLeft,
+		projectCursor:       0,
+		sessionCursor:       0,
 		projectScrollOffset: 0,
 		sessionScrollOffset: 0,
 	}
