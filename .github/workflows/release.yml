@@ -1,0 +1,77 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build release binaries
+        run: bash scripts/build-release-binaries.sh dist/release
+
+      - name: Upload release artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: dist/release/*
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: build-binaries
+    steps:
+      - name: Download release artifact bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+          path: dist/release
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/release/*
+
+  publish-npm:
+    runs-on: ubuntu-latest
+    needs: publish-release
+    if: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Sync npm version with git tag
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+        working-directory: npm
+
+      - name: Inject repository metadata for npm package
+        run: |
+          npm pkg set config.releaseRepo="${GITHUB_REPOSITORY}"
+          npm pkg set repository.url="https://github.com/${GITHUB_REPOSITORY}.git"
+          npm pkg set homepage="https://github.com/${GITHUB_REPOSITORY}"
+          npm pkg set bugs.url="https://github.com/${GITHUB_REPOSITORY}/issues"
+        working-directory: npm
+
+      - name: Publish npm package
+        run: npm publish --access public
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

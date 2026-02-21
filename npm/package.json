@@ -1,0 +1,47 @@
+{
+  "name": "agent-session-manager",
+  "version": "0.1.0",
+  "description": "Global launcher for Agent Session Manager",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OWNER/REPO.git"
+  },
+  "homepage": "https://github.com/OWNER/REPO",
+  "bugs": {
+    "url": "https://github.com/OWNER/REPO/issues"
+  },
+  "bin": {
+    "agent-manager": "bin/agent-manager.js"
+  },
+  "files": [
+    "bin/agent-manager.js",
+    "scripts/postinstall.js",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "config": {
+    "releaseRepo": "OWNER/REPO",
+    "binaryName": "agent-manager"
+  },
+  "keywords": [
+    "tui",
+    "terminal",
+    "sessions",
+    "claude",
+    "qwen",
+    "opencode"
+  ]
+}
