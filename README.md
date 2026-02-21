@@ -2,6 +2,20 @@
 
 A Bubble Tea TUI for browsing and reopening AI coding sessions (Claude Code, OpenCode, Qwen, Codex).
 
+## AI Quick Start (Copy to your AI agent)
+
+If you want an AI agent to configure this tool for your machine, copy and paste this prompt:
+
+```text
+You are configuring Agent Session Manager for this machine. Read the README section "AI Auto-Config Protocol" and execute exactly this workflow: detect platform/shell, run `go run ./cmd/session-manager --doctor --json`, propose minimal env/config changes only (no source code edits), apply them, then re-run doctor and report final status plus exact diffs.
+```
+
+How to use:
+
+1. Copy the prompt above.
+2. Paste it into your AI agent chat in this repository.
+3. Let the AI run the protocol, then review its reported diffs and doctor results.
+
 ## Status
 
 This release is optimized for WSL-first workflows. The session restore path is:
@@ -141,6 +155,13 @@ Scope constraints:
 
 - Allowed: user shell/profile env vars and user config file.
 - Not allowed: patching source code for per-user setup.
+- Not allowed: unrelated system/package changes unless user confirms.
+
+Inputs the AI must use:
+
+- Platform/shell signals (`uname -a`, `$SHELL`, `$WSL_DISTRO_NAME`).
+- Doctor outputs (`--doctor` and `--doctor --json`).
+- Existing user config path and current env vars.
 
 Steps:
 
@@ -163,6 +184,13 @@ Steps:
    - shell profile (`~/.zshrc`, `~/.bashrc`), or
    - `~/.config/agent-session-manager/config.json`
 6. Re-run doctor and verify all required commands are `ok`.
+
+Required AI output contract:
+
+- detected platform and shell
+- chosen change path (env vars or config file)
+- exact changes applied (before/after or patch-style diff)
+- final doctor status (`ok`/`fail`) and any remaining blockers
 
 Success criteria:
 
