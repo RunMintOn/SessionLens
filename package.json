@@ -5,11 +5,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/OWNER/REPO.git"
+    "url": "https://github.com/RunMintOn/SessionLens.git"
   },
-  "homepage": "https://github.com/OWNER/REPO",
+  "homepage": "https://github.com/RunMintOn/SessionLens",
   "bugs": {
-    "url": "https://github.com/OWNER/REPO/issues"
+    "url": "https://github.com/RunMintOn/SessionLens/issues"
   },
   "bin": {
     "agent-manager": "bin/agent-manager.js"
@@ -33,7 +33,7 @@
     "x64"
   ],
   "config": {
-    "releaseRepo": "OWNER/REPO",
+    "releaseRepo": "RunMintOn/SessionLens",
     "binaryName": "agent-manager"
   },
   "keywords": [

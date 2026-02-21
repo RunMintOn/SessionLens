@@ -35,6 +35,13 @@ npm i -g agent-session-manager
 agent-manager
 ```
 
+Install directly from GitHub tag (without npm registry):
+
+```bash
+npm i -g github:RunMintOn/SessionLens#v0.1.0
+agent-manager
+```
+
 No need to `cd` into this repo after install.
 
 If npm is unavailable, use a prebuilt binary from GitHub Releases and place it in your PATH as `agent-manager`.
@@ -235,5 +242,5 @@ This repo includes a tag-based release pipeline (`.github/workflows/release.yml`
    - `agent-manager-linux-amd64`
    - `agent-manager-windows-amd64.exe`
    - `checksums.txt`
-3. If `NPM_TOKEN` is configured, CI publishes `npm/` as `agent-session-manager`.
+3. If `NPM_TOKEN` is configured, CI publishes the root npm package as `agent-session-manager`.
 4. npm publish step auto-injects `GITHUB_REPOSITORY` into package metadata and release download source.
