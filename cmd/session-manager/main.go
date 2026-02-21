@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -332,24 +333,118 @@ func (m *model) clearProjectConfirm() {
 	m.confirmExpiresAt = time.Time{}
 }
 
-func launchSession(sess session.Session) {
-	var restoreCmd *exec.Cmd
+func shellQuoteSingle(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func restoreCommandForSession(sess session.Session) (string, error) {
 	switch sess.SourceTool {
 	case session.SourceClaude:
-		restoreCmd = exec.Command("claude", "-r", sess.ID)
+		return "claude -r " + shellQuoteSingle(sess.ID), nil
 	case session.SourceOpenCode:
-		restoreCmd = exec.Command("opencode", "-s", sess.ID)
+		return "opencode -s " + shellQuoteSingle(sess.ID), nil
 	case session.SourceQwen:
-		restoreCmd = exec.Command("qwen", "-r", sess.ID)
+		return "qwen -r " + shellQuoteSingle(sess.ID), nil
 	case session.SourceCodex:
-		restoreCmd = exec.Command("codex", "resume", sess.ID)
+		return "codex resume " + shellQuoteSingle(sess.ID), nil
 	default:
-		return
+		return "", fmt.Errorf("unsupported source tool: %s", sess.SourceTool)
+	}
+}
+
+func shouldUseWSL(projectPath string) bool {
+	if os.Getenv("WSL_DISTRO_NAME") != "" {
+		return true
+	}
+	if strings.HasPrefix(projectPath, "/") {
+		return true
+	}
+	return false
+}
+
+func windowsTerminalBinary() (string, error) {
+	if _, err := exec.LookPath("wt"); err == nil {
+		return "wt", nil
+	}
+	if _, err := exec.LookPath("wt.exe"); err == nil {
+		return "wt.exe", nil
 	}
 
-	if err := restoreCmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to launch %s: %v\n", sess.SourceTool, err)
+	candidates, err := filepath.Glob("/mnt/c/Users/*/AppData/Local/Microsoft/WindowsApps/wt.exe")
+	if err == nil {
+		for _, candidate := range candidates {
+			if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+				return candidate, nil
+			}
+		}
 	}
+
+	return "", fmt.Errorf("wt not found (windows terminal not discoverable from wsl)")
+}
+
+func windowsInteropProbeBinary() string {
+	if cmdBin, err := exec.LookPath("cmd.exe"); err == nil {
+		return cmdBin
+	}
+	candidate := "/mnt/c/Windows/System32/cmd.exe"
+	if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+		return candidate
+	}
+	return ""
+}
+
+func ensureWindowsInteropAvailable() error {
+	if os.Getenv("WSL_DISTRO_NAME") == "" {
+		return nil
+	}
+
+	cmdBin := windowsInteropProbeBinary()
+	if cmdBin == "" {
+		return fmt.Errorf("windows interop unavailable (cmd.exe not found)")
+	}
+
+	out, err := exec.Command(cmdBin, "/C", "echo", "ok").CombinedOutput()
+	output := strings.TrimSpace(string(out))
+	if strings.Contains(output, "UtilBindVsockAnyPort") {
+		return fmt.Errorf("windows interop unavailable in this wsl session")
+	}
+	if err != nil {
+		return fmt.Errorf("windows interop unavailable: %w", err)
+	}
+	return nil
+}
+
+func launchSession(sess session.Session) error {
+	if strings.TrimSpace(sess.ProjectPath) == "" {
+		return fmt.Errorf("missing project path for session %s", sess.ID)
+	}
+
+	restoreCmd, err := restoreCommandForSession(sess)
+	if err != nil {
+		return err
+	}
+
+	projectPath := filepath.Clean(sess.ProjectPath)
+	script := "cd " + shellQuoteSingle(projectPath) + " && " + restoreCmd
+
+	wtBin, err := windowsTerminalBinary()
+	if err != nil {
+		return err
+	}
+	if err := ensureWindowsInteropAvailable(); err != nil {
+		return err
+	}
+
+	var wtCmd *exec.Cmd
+	if shouldUseWSL(projectPath) {
+		wtCmd = exec.Command(wtBin, "wsl.exe", "-e", "zsh", "-lic", script)
+	} else {
+		wtCmd = exec.Command(wtBin, "sh", "-lc", script)
+	}
+	if err := wtCmd.Start(); err != nil {
+		return fmt.Errorf("failed to start %s: %w", wtBin, err)
+	}
+	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -558,9 +653,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampSessionCursor()
 			return m, nil
 		case tea.KeyEnter:
-			sessions := m.getSelectedProjectSessions()
-			if len(sessions) == 0 || m.sessionCursor >= len(sessions) {
-				// No sessions in selected project, try to open shell at project
+			if m.focusPanel == focusLeft {
 				grouped := m.getGroupedProjects()
 				if len(grouped) > 0 && m.projectCursor < len(grouped) {
 					selectedProject := grouped[m.projectCursor].projectPath
@@ -577,8 +670,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			sessions := m.getSelectedProjectSessions()
+			if len(sessions) == 0 || m.sessionCursor >= len(sessions) {
+				m.clearProjectConfirm()
+				return m, nil
+			}
+
 			selected := sessions[m.sessionCursor]
-			launchSession(selected)
+			if err := launchSession(selected); err != nil {
+				m.statusMessage = err.Error()
+				return m, nil
+			}
+			m.statusMessage = ""
 			m.clearProjectConfirm()
 			return m, nil
 		}
@@ -652,7 +755,7 @@ func (m model) View() string {
 		m.renderFilterRow(),
 	}, "\n")
 
-	footerText := "←/→ switch  ↑/k move  ↓/j move  Enter open  / search  q quit  1-5 filter  h hide  H hidden"
+	footerText := "←/→ switch  ↑/k move  ↓/j move  Enter: Left project / Right resume  / search  q quit  1-5 filter  h hide  H hidden"
 	if m.searchActive {
 		footerText = "SEARCH INPUT  |  type to search  |  Esc clear & exit search"
 	} else if m.query != "" {
