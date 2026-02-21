@@ -63,6 +63,7 @@ var (
 	leftMutedColor      = lipgloss.Color("#94A3B8")
 	leftCardColor       = lipgloss.Color("#20262D")
 	leftCardBorderColor = lipgloss.Color("#2F3944")
+	rightMutedColor     = lipgloss.Color("#94A3B8")
 )
 
 var (
@@ -114,6 +115,7 @@ const (
 	leftPanelMinWidth    = 28
 	rightPanelMinWidth   = 30
 	projectCardRowHeight = 3 // title + meta + spacer
+	sessionCardRowHeight = 2 // compact list with slight breathing room
 )
 
 type rowKind int
@@ -862,6 +864,73 @@ func renderProjectCard(path string, sessionCount, innerWidth int, isSelected, is
 	return base.Render(content)
 }
 
+func formatSessionTimestamp(ts int64) string {
+	if ts <= 0 {
+		return "time unknown"
+	}
+	return time.Unix(ts, 0).Local().Format("06-01-02 15:04")
+}
+
+func sessionBadgeStyle(source session.SourceType) lipgloss.Style {
+	switch source {
+	case session.SourceOpenCode:
+		return lipgloss.NewStyle().Foreground(openCodeColor).Faint(true)
+	case session.SourceClaude:
+		return lipgloss.NewStyle().Foreground(claudeColor).Faint(true)
+	case session.SourceQwen:
+		return lipgloss.NewStyle().Foreground(qwenColor).Faint(true)
+	case session.SourceCodex:
+		return lipgloss.NewStyle().Foreground(codexColor).Faint(true)
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#7A7A7A")).Faint(true)
+	}
+}
+
+func renderSessionCard(sess session.Session, innerWidth int, isSelected, isFocused bool) string {
+	if innerWidth < 10 {
+		return ""
+	}
+
+	prefix := "  "
+	if isSelected && isFocused {
+		prefix = "> "
+	} else if isSelected {
+		prefix = "▸ "
+	}
+
+	badgePlain := string(sess.SourceTool)
+	badge := sessionBadgeStyle(sess.SourceTool).Render(badgePlain)
+	badgeWidth := runewidth.StringWidth(badgePlain)
+	timeText := formatSessionTimestamp(sess.LastUpdated)
+	timeWidth := runewidth.StringWidth(timeText)
+
+	plainPrefixWidth := runewidth.StringWidth(prefix)
+	// Reserve: prefix + space + badge + 2 spaces + time.
+	titleWidth := innerWidth - plainPrefixWidth - badgeWidth - timeWidth - 4
+	if titleWidth < 4 {
+		titleWidth = 4
+	}
+	title := truncateRunes(normalizeSingleLine(sess.Title), titleWidth)
+	leftPart := prefix + title + " " + badge
+	leftPartWidth := plainPrefixWidth + runewidth.StringWidth(title) + 1 + badgeWidth
+	gap := innerWidth - leftPartWidth - timeWidth
+	if gap < 1 {
+		gap = 1
+	}
+
+	timeStyled := lipgloss.NewStyle().Foreground(rightMutedColor).Render(timeText)
+	line := leftPart + strings.Repeat(" ", gap) + timeStyled
+	line = padRightWidth(line, innerWidth)
+
+	if isSelected && isFocused {
+		return selectedStyle.Render(line)
+	}
+	if isSelected {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0")).Bold(true).Render(line)
+	}
+	return itemStyle.Render(line)
+}
+
 func (m model) View() string {
 	width := m.width
 	height := m.height
@@ -916,7 +985,7 @@ func (m model) View() string {
 	if leftPanelWidth < leftPanelMinWidth {
 		leftPanelWidth = leftPanelMinWidth
 	}
-	maxLeftWidth := width - rightPanelMinWidth - 1
+	maxLeftWidth := width - rightPanelMinWidth
 	if maxLeftWidth < 20 {
 		maxLeftWidth = 20
 	}
@@ -924,17 +993,18 @@ func (m model) View() string {
 		leftPanelWidth = maxLeftWidth
 	}
 
-	rightPanelWidth := width - leftPanelWidth - 1 // -1 for separator
+	rightPanelWidth := width - leftPanelWidth
 	if rightPanelWidth < rightPanelMinWidth {
 		rightPanelWidth = rightPanelMinWidth
-		leftPanelWidth = width - rightPanelWidth - 1
+		leftPanelWidth = width - rightPanelWidth
 	}
 	if leftPanelWidth < 20 {
 		leftPanelWidth = 20
-		rightPanelWidth = width - leftPanelWidth - 1
+		rightPanelWidth = width - leftPanelWidth
 	}
 	if rightPanelWidth < 20 {
 		rightPanelWidth = 20
+		leftPanelWidth = width - rightPanelWidth
 	}
 
 	leftInnerWidth := leftPanelWidth - panelStyle.GetHorizontalFrameSize()
@@ -982,83 +1052,46 @@ func (m model) View() string {
 	var selectedProjectPath string
 	if len(grouped) > 0 && m.projectCursor < len(grouped) {
 		selectedProjectPath = grouped[m.projectCursor].projectPath
-		rightBody.WriteString(fmt.Sprintf("Sessions: %s\n\n", simplifyPath(selectedProjectPath)))
+		rightBody.WriteString(
+			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E2E8F0")).Render("SESSIONS") + "\n",
+		)
+		rightBody.WriteString(
+			lipgloss.NewStyle().Foreground(rightMutedColor).
+				Render(truncateRunesNoEllipsis(simplifyPath(selectedProjectPath), rightInnerWidth-2)) + "\n\n",
+		)
 	} else {
-		rightBody.WriteString("Sessions\n\n")
+		rightBody.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E2E8F0")).Render("SESSIONS") + "\n")
+		rightBody.WriteString(lipgloss.NewStyle().Foreground(rightMutedColor).Render("select a project") + "\n\n")
 	}
 
 	sessions := m.getSelectedProjectSessions()
-	rightVisibleRows := contentHeight - 3
-	if rightVisibleRows < 1 {
-		rightVisibleRows = 1
+	rightHeaderHeight := 3
+	rightVisibleCards := (contentHeight - rightHeaderHeight) / sessionCardRowHeight
+	if rightVisibleCards < 1 {
+		rightVisibleCards = 1
 	}
-	rightStart, rightEnd := getVisibleWindow(len(sessions), m.sessionCursor, rightVisibleRows)
+	rightStart, rightEnd := getVisibleWindow(len(sessions), m.sessionCursor, rightVisibleCards)
+	if rightStart > 0 {
+		rightBody.WriteString(lipgloss.NewStyle().Foreground(rightMutedColor).Render("  ↑ more") + "\n")
+	}
 
 	for i := rightStart; i < rightEnd; i++ {
 		sess := sessions[i]
 		isSelected := i == m.sessionCursor
 		isFocused := m.focusPanel == focusRight
-
-		badgePlain := string(sess.SourceTool)
-		badgeWidth := runewidth.StringWidth(badgePlain)
-
-		// Badge 优先策略：始终预留 Badge 空间
-		prefix := "> "
-		if !(isSelected && isFocused) {
-			prefix = "  "
-		}
-		prefixWidth := runewidth.StringWidth(prefix)
-		spaceWidth := 1 // 标题和 Badge 之间的空格
-
-		// 宽松截断策略：先尝试完整显示标题，超出窗口宽度时才截断
-		title := normalizeSingleLine(sess.Title)
-
-		// 用纯文本计算宽度（避免 ANSI 转义序列干扰）
-		plainLine := prefix + title + " " + badgePlain
-		if runewidth.StringWidth(plainLine) > rightInnerWidth {
-			maxTitle := rightInnerWidth - prefixWidth - badgeWidth - spaceWidth
-			if maxTitle > 0 {
-				title = truncateRunes(title, maxTitle)
-			} else {
-				title = ""
-			}
-		}
-
-		// 应用颜色样式到 Badge
-		badgeStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#7A7A7A")).
-			Faint(true)
-		switch sess.SourceTool {
-		case session.SourceOpenCode:
-			badgeStyle = lipgloss.NewStyle().Foreground(openCodeColor).Faint(true)
-		case session.SourceClaude:
-			badgeStyle = lipgloss.NewStyle().Foreground(claudeColor).Faint(true)
-		case session.SourceQwen:
-			badgeStyle = lipgloss.NewStyle().Foreground(qwenColor).Faint(true)
-		case session.SourceCodex:
-			badgeStyle = lipgloss.NewStyle().Foreground(codexColor).Faint(true)
-		}
-		badge := badgeStyle.Render(badgePlain)
-
-		if isSelected && isFocused {
-			// 选中且焦点在右面板：显示高亮
-			line := prefix + title + " " + badge
-			line = padRightWidth(line, rightInnerWidth)
-			rightBody.WriteString(selectedStyle.Render(line) + "\n")
-		} else {
-			// 未选中或焦点不在右面板
-			line := prefix + title + " " + badge
-			line = padRightWidth(line, rightInnerWidth)
-			rightBody.WriteString(itemStyle.Render(line) + "\n")
-		}
+		rightBody.WriteString(renderSessionCard(sess, rightInnerWidth, isSelected, isFocused))
+		rightBody.WriteString("\n\n")
 	}
 
 	if len(sessions) == 0 {
 		if selectedProjectPath != "" {
-			rightBody.WriteString("  (no sessions in this project)\n")
+			rightBody.WriteString(lipgloss.NewStyle().Foreground(rightMutedColor).Render("  (no sessions in this project)") + "\n")
 		} else {
-			rightBody.WriteString("  (select a project)\n")
+			rightBody.WriteString(lipgloss.NewStyle().Foreground(rightMutedColor).Render("  (select a project)") + "\n")
 		}
+	}
+	if rightEnd < len(sessions) {
+		rightBody.WriteString(lipgloss.NewStyle().Foreground(rightMutedColor).Render("  ↓ more") + "\n")
 	}
 
 	rightPanel := panelStyle.Width(rightPanelWidth).Height(contentHeight).Render(rightBody.String())
