@@ -1,6 +1,6 @@
 {
   "name": "agent-session-manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Global launcher for Agent Session Manager",
   "license": "MIT",
   "repository": {
@@ -16,11 +16,12 @@
   },
   "files": [
     "bin/agent-manager.js",
-    "scripts/postinstall.js",
+    "scripts/bootstrap-binary.js",
+    "scripts/lib/install-binary.js",
     "README.md"
   ],
   "scripts": {
-    "postinstall": "node scripts/postinstall.js"
+    "bootstrap-binary": "node scripts/bootstrap-binary.js"
   },
   "engines": {
     "node": ">=18"

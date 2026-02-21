@@ -33,18 +33,19 @@ Install once, run anywhere (GitHub source):
 Stable release (recommended):
 
 ```bash
-npm i -g github:RunMintOn/SessionLens#v0.1.0
+npm i -g github:RunMintOn/SessionLens#v0.1.1
 agent-manager
 ```
 
-Latest main branch (bleeding edge, may be unstable):
+Latest default branch (bleeding edge, may be unstable):
 
 ```bash
-npm i -g github:RunMintOn/SessionLens#main
+npm i -g github:RunMintOn/SessionLens
 agent-manager
 ```
 
 No need to `cd` into this repo after install.
+On first run, `agent-manager` auto-downloads the matching binary from GitHub Releases.
 
 If npm is unavailable, use a prebuilt binary from GitHub Releases and place it in your PATH as `agent-manager`.
 
@@ -95,6 +96,13 @@ Example:
 export ASM_WSL_SHELL="bash -lc"
 export ASM_RESTORE_CMD_QWEN="qwen --resume {id}"
 ```
+
+Install/bootstrap-specific environment variables:
+
+- `ASM_RELEASE_REPO` (override GitHub release repo, format `OWNER/REPO`)
+- `ASM_RELEASE_TAG` (pin a release tag, e.g. `v0.1.1`)
+- `ASM_RELEASE_BASE_URL` (use custom release mirror base URL)
+- `ASM_SKIP_BOOTSTRAP=1` (disable first-run binary download)
 
 ## Config File
 
@@ -228,6 +236,9 @@ Success criteria:
 - `wt not found`: install Windows Terminal or set `ASM_TERMINAL_CMD`.
 - `windows interop unavailable`: WSL cannot spawn Windows processes in current environment.
 - `qwen: not found` (or similar): ensure command is available in configured shell, or override restore command via `ASM_RESTORE_CMD_*`.
+- `bootstrap failed` on first run: check network access to GitHub, or pin a valid release tag:
+  - `ASM_RELEASE_TAG=v0.1.1 agent-manager`
+  - `ASM_RELEASE_BASE_URL=<mirror-url> agent-manager`
 
 ## Tests
 
@@ -239,9 +250,11 @@ go test ./...
 
 This repo includes a tag-based release pipeline (`.github/workflows/release.yml`):
 
-1. Push a tag like `v0.1.0`.
+1. Push a tag like `v0.1.1`.
 2. CI builds and uploads:
    - `agent-manager-linux-amd64`
    - `agent-manager-windows-amd64.exe`
    - `checksums.txt`
-3. Users install directly from GitHub tag via `npm i -g github:RunMintOn/SessionLens#vX.Y.Z`.
+3. Users can install:
+   - stable tag: `npm i -g github:RunMintOn/SessionLens#vX.Y.Z`
+   - latest default branch: `npm i -g github:RunMintOn/SessionLens`
