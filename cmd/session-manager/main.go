@@ -280,22 +280,22 @@ var (
 	qwenColor     = lipgloss.Color("#93C5FD")
 	codexColor    = lipgloss.Color("#FCA5A5")
 
-	bgColor             = lipgloss.Color("#1E1E1E")
 	borderColor         = lipgloss.Color("#3C3C3C")
 	textColor           = lipgloss.Color("#FAFAFA")
 	selectedColor       = lipgloss.Color("#569CD6")
-	leftMutedColor      = lipgloss.Color("#94A3B8")
-	leftCardColor       = lipgloss.Color("#20262D")
+	leftMutedColor      = lipgloss.Color("#7C8A9A")
 	leftCardBorderColor = lipgloss.Color("#2F3944")
-	rightMutedColor     = lipgloss.Color("#94A3B8")
+	rightMutedColor     = lipgloss.Color("#7C8A9A")
+	pathMutedColor      = lipgloss.Color("#5B6572")
 )
 
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#334155")).
-			Padding(0, 1)
+			Padding(0, 1).
+			Border(lipgloss.NormalBorder(), false, false, true, false).
+			BorderForeground(borderColor)
 
 	itemStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFFFFF"))
@@ -306,26 +306,35 @@ var (
 
 	selectedStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(selectedColor)
+			Bold(true)
 
 	panelStyle = lipgloss.NewStyle().
-			Background(bgColor).
 			Padding(1, 1)
 
 	footerPanelStyle = lipgloss.NewStyle().
-				Background(bgColor).
 				Padding(0, 1)
 
-	searchLineStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#1D4ED8")).
-			Padding(0, 1)
+	searchPrefixStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(selectedColor)
+
+	searchActiveStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFFFFF")).
+				Padding(0, 1).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(selectedColor)
+
+	searchInactiveStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#9CA3AF")).
+				Padding(0, 1).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(borderColor).
+				Faint(true)
 
 	filterActiveStyle = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("#FFFFFF")).
-				Background(selectedColor).
+				Border(lipgloss.NormalBorder(), false, false, true, false).
 				Padding(0, 1)
 
 	filterInactiveStyle = lipgloss.NewStyle().
@@ -1067,9 +1076,9 @@ func renderProjectCard(path string, sessionCount, innerWidth int, isSelected, is
 	pathText := simplifyPath(path)
 	titlePrefix := "  "
 	if isSelected && isFocused {
-		titlePrefix = "> "
+		titlePrefix = "▍ "
 	} else if isSelected {
-		titlePrefix = "▸ "
+		titlePrefix = "│ "
 	}
 
 	titleWidth := innerWidth - 4
@@ -1086,13 +1095,12 @@ func renderProjectCard(path string, sessionCount, innerWidth int, isSelected, is
 		Padding(0, 1).
 		Foreground(textColor).
 		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(leftCardBorderColor).
-		Background(leftCardColor)
+		BorderForeground(leftCardBorderColor)
 
 	if isSelected && isFocused {
-		base = base.BorderForeground(selectedColor).Background(lipgloss.Color("#253343"))
+		base = base.BorderForeground(selectedColor).Bold(true)
 	} else if isSelected {
-		base = base.BorderForeground(openCodeColor).Background(lipgloss.Color("#222C35"))
+		base = base.BorderForeground(openCodeColor)
 	}
 
 	return base.Render(content)
@@ -1100,9 +1108,28 @@ func renderProjectCard(path string, sessionCount, innerWidth int, isSelected, is
 
 func formatSessionTimestamp(ts int64) string {
 	if ts <= 0 {
-		return "time unknown"
+		return "unknown"
 	}
-	return time.Unix(ts, 0).Local().Format("06-01-02 15:04")
+	eventTime := time.Unix(ts, 0)
+	if eventTime.After(time.Now()) {
+		return "just now"
+	}
+
+	ago := time.Since(eventTime)
+	switch {
+	case ago < time.Minute:
+		return "just now"
+	case ago < time.Hour:
+		return fmt.Sprintf("%dm ago", int(ago.Minutes()))
+	case ago < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(ago.Hours()))
+	case ago < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(ago.Hours()/24))
+	case ago < 30*24*time.Hour:
+		return fmt.Sprintf("%dw ago", int(ago.Hours()/(24*7)))
+	default:
+		return eventTime.Local().Format("2006-01-02")
+	}
 }
 
 func sessionBadgeStyle(source session.SourceType) lipgloss.Style {
@@ -1127,9 +1154,9 @@ func renderSessionCard(sess session.Session, innerWidth int, isSelected, isFocus
 
 	prefix := "  "
 	if isSelected && isFocused {
-		prefix = "> "
+		prefix = "▍ "
 	} else if isSelected {
-		prefix = "▸ "
+		prefix = "│ "
 	}
 
 	badgePlain := string(sess.SourceTool)
@@ -1157,10 +1184,10 @@ func renderSessionCard(sess session.Session, innerWidth int, isSelected, isFocus
 	line = padRightWidth(line, innerWidth)
 
 	if isSelected && isFocused {
-		return selectedStyle.Render(line)
+		return selectedStyle.Foreground(selectedColor).Render(line)
 	}
 	if isSelected {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0")).Bold(true).Render(line)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#CBD5E1")).Bold(true).Render(line)
 	}
 	return itemStyle.Render(line)
 }
@@ -1179,12 +1206,26 @@ func (m model) View() string {
 	if searchValue == "" && !m.searchActive {
 		searchValue = "/ to search"
 	}
-	searchLine := searchLineStyle.Width(width - 2).Render("SEARCH> " + truncateRunes(searchValue, width-12))
+	searchWidth := width - 2
+	if searchWidth < 10 {
+		searchWidth = 10
+	}
+	searchContent := searchPrefixStyle.Render("SEARCH> ") + truncateRunes(searchValue, max(0, width-12))
+	searchStyle := searchInactiveStyle
+	if m.searchActive {
+		searchStyle = searchActiveStyle
+	}
+	searchLine := searchStyle.Width(searchWidth).Render(searchContent)
+	headerDivider := lipgloss.NewStyle().
+		Foreground(borderColor).
+		Faint(true).
+		Render(strings.Repeat("─", max(1, width)))
 
 	header := strings.Join([]string{
 		titleStyle.Render(" Agent Session Manager "),
 		searchLine,
 		m.renderFilterRow(),
+		headerDivider,
 	}, "\n")
 
 	footerText := "←/→ switch  ↑/k move  ↓/j move  Enter: Left project / Right resume  / search  q quit  1-5 filter  h hide  H hidden"
@@ -1201,9 +1242,13 @@ func (m model) View() string {
 	}
 	footerText = truncateRunes(normalizeSingleLine(footerText), width-4)
 
-	footer := footerPanelStyle.Width(width - 2).Render(
+	footerWidth := width - 2
+	if footerWidth < 10 {
+		footerWidth = 10
+	}
+	footer := footerPanelStyle.Width(footerWidth).Render(
 		lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#888888")).
+			Foreground(lipgloss.Color("#6B7280")).
 			Render(footerText),
 	)
 
@@ -1290,7 +1335,7 @@ func (m model) View() string {
 			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E2E8F0")).Render("SESSIONS") + "\n",
 		)
 		rightBody.WriteString(
-			lipgloss.NewStyle().Foreground(rightMutedColor).
+			lipgloss.NewStyle().Foreground(pathMutedColor).Faint(true).
 				Render(truncateRunesNoEllipsis(simplifyPath(selectedProjectPath), rightInnerWidth-2)) + "\n\n",
 		)
 	} else {
@@ -1331,12 +1376,15 @@ func (m model) View() string {
 	rightPanel := panelStyle.Width(rightPanelWidth).Height(contentHeight).Render(rightBody.String())
 
 	// Join panels horizontally
-	view := header + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel) + "\n" + footer
+	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
+	view := header + "\n" + panels + "\n" + footer
+	view = lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top, view)
 
 	if m.showHiddenOverlay && m.hiddenManager != nil {
 		hiddenEntries := m.hiddenManager.List()
 		overlay := m.renderHiddenOverlay(hiddenEntries, width, height)
-		view = lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, view) + overlay
+		view = lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top, view)
+		view += lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, overlay)
 	}
 
 	return view
@@ -1375,7 +1423,6 @@ func (m model) renderHiddenOverlay(hiddenEntries []hidden.HiddenEntry, width, he
 	overlayContent := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#FDBA74")).
-		Background(bgColor).
 		Padding(1, 2).
 		Width(overlayWidth).
 		Render(titleStyle.Render(title) + "\n\n" + content)
