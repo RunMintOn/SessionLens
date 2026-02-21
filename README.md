@@ -1,6 +1,7 @@
 # Agent Session Manager
 
 A Bubble Tea TUI for browsing and reopening AI coding sessions (Claude Code, OpenCode, Qwen, Codex).
+![alt text](image-1.png)
 
 ## AI Quick Start (Copy to your AI agent)
 
