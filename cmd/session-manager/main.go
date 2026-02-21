@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -20,15 +23,71 @@ import (
 
 type launcherConfig struct {
 	TerminalCmd        string
+	TerminalArgs       []string
 	WSLEntryCmd        string
 	WSLShell           string
+	HostShellCmd       string
+	HostShellArgs      []string
 	RestoreCmdClaude   string
 	RestoreCmdOpenCode string
 	RestoreCmdQwen     string
 	RestoreCmdCodex    string
 }
 
-var launcherCfg = loadLauncherConfigFromEnv()
+type launcherConfigFile struct {
+	TerminalCmd        string   `json:"terminal_cmd"`
+	TerminalArgs       []string `json:"terminal_args"`
+	WSLEntryCmd        string   `json:"wsl_entry_cmd"`
+	WSLShell           string   `json:"wsl_shell"`
+	HostShellCmd       string   `json:"host_shell_cmd"`
+	HostShellArgs      []string `json:"host_shell_args"`
+	RestoreCmdClaude   string   `json:"restore_cmd_claude"`
+	RestoreCmdOpenCode string   `json:"restore_cmd_opencode"`
+	RestoreCmdQwen     string   `json:"restore_cmd_qwen"`
+	RestoreCmdCodex    string   `json:"restore_cmd_codex"`
+}
+
+type cliOptions struct {
+	doctor               bool
+	doctorJSON           bool
+	printEffectiveConfig bool
+	initConfig           bool
+	write                bool
+	force                bool
+}
+
+type doctorCheck struct {
+	Status  string `json:"status"`
+	Details string `json:"details,omitempty"`
+}
+
+type doctorSuggestion struct {
+	Type        string `json:"type"`
+	Title       string `json:"title"`
+	Key         string `json:"key,omitempty"`
+	Value       string `json:"value,omitempty"`
+	Path        string `json:"path,omitempty"`
+	JSONPointer string `json:"json_pointer,omitempty"`
+	Message     string `json:"message,omitempty"`
+}
+
+type doctorReport struct {
+	SchemaVersion string             `json:"schema_version"`
+	Platform      map[string]any     `json:"platform"`
+	Config        map[string]any     `json:"config"`
+	Checks        map[string]any     `json:"checks"`
+	Suggestions   []doctorSuggestion `json:"suggestions"`
+}
+
+var (
+	launcherCfg        launcherConfig
+	launcherCfgSources map[string]string
+	launcherCfgPath    string
+	launcherCfgWarning string
+	launcherCfgLoaded  bool
+)
+
+var placeholderPattern = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 
 func envOrDefault(key, def string) string {
 	v := strings.TrimSpace(os.Getenv(key))
@@ -38,16 +97,181 @@ func envOrDefault(key, def string) string {
 	return v
 }
 
-func loadLauncherConfigFromEnv() launcherConfig {
-	return launcherConfig{
-		TerminalCmd:        envOrDefault("ASM_TERMINAL_CMD", "wt"),
-		WSLEntryCmd:        envOrDefault("ASM_WSL_ENTRY_CMD", "wsl.exe"),
-		WSLShell:           envOrDefault("ASM_WSL_SHELL", "zsh -lic"),
-		RestoreCmdClaude:   envOrDefault("ASM_RESTORE_CMD_CLAUDE", "claude -r {id}"),
-		RestoreCmdOpenCode: envOrDefault("ASM_RESTORE_CMD_OPENCODE", "opencode -s {id}"),
-		RestoreCmdQwen:     envOrDefault("ASM_RESTORE_CMD_QWEN", "qwen -r {id}"),
-		RestoreCmdCodex:    envOrDefault("ASM_RESTORE_CMD_CODEX", "codex resume {id}"),
+func defaultLauncherConfig() launcherConfig {
+	cfg := launcherConfig{
+		TerminalCmd:        "x-terminal-emulator",
+		TerminalArgs:       []string{"-e"},
+		WSLEntryCmd:        "wsl.exe",
+		WSLShell:           "zsh -lic",
+		HostShellCmd:       "sh",
+		HostShellArgs:      []string{"-lc"},
+		RestoreCmdClaude:   "claude -r {id}",
+		RestoreCmdOpenCode: "opencode -s {id}",
+		RestoreCmdQwen:     "qwen -r {id}",
+		RestoreCmdCodex:    "codex resume {id}",
 	}
+
+	if runtime.GOOS == "windows" || os.Getenv("WSL_DISTRO_NAME") != "" {
+		cfg.TerminalCmd = "wt"
+		cfg.TerminalArgs = nil
+	}
+	if runtime.GOOS == "darwin" {
+		cfg.TerminalCmd = "open"
+		cfg.TerminalArgs = []string{"-a", "Terminal"}
+		cfg.HostShellCmd = "zsh"
+		cfg.HostShellArgs = []string{"-lc"}
+	}
+	return cfg
+}
+
+func launcherConfigPath() string {
+	if custom := strings.TrimSpace(os.Getenv("ASM_CONFIG_PATH")); custom != "" {
+		return custom
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(configDir) == "" {
+		return ""
+	}
+	return filepath.Join(configDir, "agent-session-manager", "config.json")
+}
+
+func defaultConfigSources() map[string]string {
+	return map[string]string{
+		"terminal_cmd":         "default",
+		"terminal_args":        "default",
+		"wsl_entry_cmd":        "default",
+		"wsl_shell":            "default",
+		"host_shell_cmd":       "default",
+		"host_shell_args":      "default",
+		"restore_cmd_claude":   "default",
+		"restore_cmd_opencode": "default",
+		"restore_cmd_qwen":     "default",
+		"restore_cmd_codex":    "default",
+	}
+}
+
+func applyLauncherFileConfig(cfg *launcherConfig, fileCfg launcherConfigFile, sources map[string]string) {
+	if strings.TrimSpace(fileCfg.TerminalCmd) != "" {
+		cfg.TerminalCmd = strings.TrimSpace(fileCfg.TerminalCmd)
+		sources["terminal_cmd"] = "file"
+	}
+	if strings.TrimSpace(fileCfg.WSLEntryCmd) != "" {
+		cfg.WSLEntryCmd = strings.TrimSpace(fileCfg.WSLEntryCmd)
+		sources["wsl_entry_cmd"] = "file"
+	}
+	if strings.TrimSpace(fileCfg.WSLShell) != "" {
+		cfg.WSLShell = strings.TrimSpace(fileCfg.WSLShell)
+		sources["wsl_shell"] = "file"
+	}
+	if strings.TrimSpace(fileCfg.HostShellCmd) != "" {
+		cfg.HostShellCmd = strings.TrimSpace(fileCfg.HostShellCmd)
+		sources["host_shell_cmd"] = "file"
+	}
+	if fileCfg.TerminalArgs != nil {
+		cfg.TerminalArgs = append([]string{}, fileCfg.TerminalArgs...)
+		sources["terminal_args"] = "file"
+	}
+	if fileCfg.HostShellArgs != nil {
+		cfg.HostShellArgs = append([]string{}, fileCfg.HostShellArgs...)
+		sources["host_shell_args"] = "file"
+	}
+	if strings.TrimSpace(fileCfg.RestoreCmdClaude) != "" {
+		cfg.RestoreCmdClaude = strings.TrimSpace(fileCfg.RestoreCmdClaude)
+		sources["restore_cmd_claude"] = "file"
+	}
+	if strings.TrimSpace(fileCfg.RestoreCmdOpenCode) != "" {
+		cfg.RestoreCmdOpenCode = strings.TrimSpace(fileCfg.RestoreCmdOpenCode)
+		sources["restore_cmd_opencode"] = "file"
+	}
+	if strings.TrimSpace(fileCfg.RestoreCmdQwen) != "" {
+		cfg.RestoreCmdQwen = strings.TrimSpace(fileCfg.RestoreCmdQwen)
+		sources["restore_cmd_qwen"] = "file"
+	}
+	if strings.TrimSpace(fileCfg.RestoreCmdCodex) != "" {
+		cfg.RestoreCmdCodex = strings.TrimSpace(fileCfg.RestoreCmdCodex)
+		sources["restore_cmd_codex"] = "file"
+	}
+}
+
+func envArgs(key string, fallback []string) []string {
+	raw, exists := os.LookupEnv(key)
+	if !exists {
+		return append([]string{}, fallback...)
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return []string{}
+	}
+	return strings.Fields(trimmed)
+}
+
+func loadLauncherConfigFromEnv(base launcherConfig, sources map[string]string) launcherConfig {
+	cfg := base
+	if _, ok := os.LookupEnv("ASM_TERMINAL_CMD"); ok {
+		sources["terminal_cmd"] = "env"
+	}
+	cfg.TerminalCmd = envOrDefault("ASM_TERMINAL_CMD", cfg.TerminalCmd)
+	if _, ok := os.LookupEnv("ASM_TERMINAL_ARGS"); ok {
+		sources["terminal_args"] = "env"
+	}
+	cfg.TerminalArgs = envArgs("ASM_TERMINAL_ARGS", cfg.TerminalArgs)
+	if _, ok := os.LookupEnv("ASM_WSL_ENTRY_CMD"); ok {
+		sources["wsl_entry_cmd"] = "env"
+	}
+	cfg.WSLEntryCmd = envOrDefault("ASM_WSL_ENTRY_CMD", cfg.WSLEntryCmd)
+	if _, ok := os.LookupEnv("ASM_WSL_SHELL"); ok {
+		sources["wsl_shell"] = "env"
+	}
+	cfg.WSLShell = envOrDefault("ASM_WSL_SHELL", cfg.WSLShell)
+	if _, ok := os.LookupEnv("ASM_HOST_SHELL_CMD"); ok {
+		sources["host_shell_cmd"] = "env"
+	}
+	cfg.HostShellCmd = envOrDefault("ASM_HOST_SHELL_CMD", cfg.HostShellCmd)
+	if _, ok := os.LookupEnv("ASM_HOST_SHELL_ARGS"); ok {
+		sources["host_shell_args"] = "env"
+	}
+	cfg.HostShellArgs = envArgs("ASM_HOST_SHELL_ARGS", cfg.HostShellArgs)
+	if _, ok := os.LookupEnv("ASM_RESTORE_CMD_CLAUDE"); ok {
+		sources["restore_cmd_claude"] = "env"
+	}
+	cfg.RestoreCmdClaude = envOrDefault("ASM_RESTORE_CMD_CLAUDE", cfg.RestoreCmdClaude)
+	if _, ok := os.LookupEnv("ASM_RESTORE_CMD_OPENCODE"); ok {
+		sources["restore_cmd_opencode"] = "env"
+	}
+	cfg.RestoreCmdOpenCode = envOrDefault("ASM_RESTORE_CMD_OPENCODE", cfg.RestoreCmdOpenCode)
+	if _, ok := os.LookupEnv("ASM_RESTORE_CMD_QWEN"); ok {
+		sources["restore_cmd_qwen"] = "env"
+	}
+	cfg.RestoreCmdQwen = envOrDefault("ASM_RESTORE_CMD_QWEN", cfg.RestoreCmdQwen)
+	if _, ok := os.LookupEnv("ASM_RESTORE_CMD_CODEX"); ok {
+		sources["restore_cmd_codex"] = "env"
+	}
+	cfg.RestoreCmdCodex = envOrDefault("ASM_RESTORE_CMD_CODEX", cfg.RestoreCmdCodex)
+	return cfg
+}
+
+func loadLauncherConfig() (launcherConfig, map[string]string, string, string, bool) {
+	cfg := defaultLauncherConfig()
+	sources := defaultConfigSources()
+	path := launcherConfigPath()
+	warning := ""
+	loaded := false
+	if path != "" {
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			var fileCfg launcherConfigFile
+			if unmarshalErr := json.Unmarshal(raw, &fileCfg); unmarshalErr != nil {
+				return loadLauncherConfigFromEnv(cfg, sources), sources, path, fmt.Sprintf("invalid launcher config JSON at %s: %v", path, unmarshalErr), false
+			}
+			applyLauncherFileConfig(&cfg, fileCfg, sources)
+			loaded = true
+		} else if !os.IsNotExist(err) {
+			warning = fmt.Sprintf("failed to read launcher config at %s: %v", path, err)
+		}
+	}
+
+	cfg = loadLauncherConfigFromEnv(cfg, sources)
+	return cfg, sources, path, warning, loaded
 }
 
 var (
@@ -404,13 +628,7 @@ func renderTemplate(template string, values map[string]string) string {
 }
 
 func shouldUseWSL(projectPath string) bool {
-	if os.Getenv("WSL_DISTRO_NAME") != "" {
-		return true
-	}
-	if strings.HasPrefix(projectPath, "/") {
-		return true
-	}
-	return false
+	return os.Getenv("WSL_DISTRO_NAME") != ""
 }
 
 func commandBinary(command string) (string, error) {
@@ -429,6 +647,11 @@ func commandBinary(command string) (string, error) {
 func windowsTerminalBinary(cfg launcherConfig) (string, error) {
 	if path, err := commandBinary(cfg.TerminalCmd); err == nil {
 		return path, nil
+	}
+
+	terminalLower := strings.ToLower(strings.TrimSpace(cfg.TerminalCmd))
+	if terminalLower != "wt" && terminalLower != "wt.exe" {
+		return "", fmt.Errorf("%s not found", cfg.TerminalCmd)
 	}
 
 	candidates, err := filepath.Glob("/mnt/c/Users/*/AppData/Local/Microsoft/WindowsApps/wt.exe")
@@ -481,14 +704,20 @@ func resolveRestoreScript(sess session.Session, cfg launcherConfig) (string, err
 	if err != nil {
 		return "", err
 	}
+	for _, match := range placeholderPattern.FindAllStringSubmatch(template, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		name := match[1]
+		if name != "id" && name != "project" {
+			return "", fmt.Errorf("invalid restore command template: unresolved placeholder")
+		}
+	}
 	replaceValues := map[string]string{
 		"id":      shellQuoteSingle(sess.ID),
 		"project": shellQuoteSingle(projectPath),
 	}
 	restoreCmd := renderTemplate(template, replaceValues)
-	if strings.Contains(restoreCmd, "{") || strings.Contains(restoreCmd, "}") {
-		return "", fmt.Errorf("invalid restore command template: unresolved placeholder")
-	}
 	return "cd " + shellQuoteSingle(projectPath) + " && " + restoreCmd, nil
 }
 
@@ -526,12 +755,17 @@ func launchSession(sess session.Session) error {
 		if err != nil {
 			return err
 		}
-		args := []string{launcherCfg.WSLEntryCmd, "-e"}
+		args := append([]string{}, launcherCfg.TerminalArgs...)
+		args = append(args, launcherCfg.WSLEntryCmd, "-e")
 		args = append(args, wslShell...)
 		args = append(args, script)
 		wtCmd = exec.Command(wtBin, args...)
 	} else {
-		wtCmd = exec.Command(wtBin, "sh", "-lc", script)
+		args := append([]string{}, launcherCfg.TerminalArgs...)
+		args = append(args, launcherCfg.HostShellCmd)
+		args = append(args, launcherCfg.HostShellArgs...)
+		args = append(args, script)
+		wtCmd = exec.Command(wtBin, args...)
 	}
 	if err := wtCmd.Start(); err != nil {
 		return fmt.Errorf("failed to start %s: %w", wtBin, err)
@@ -1236,6 +1470,68 @@ func runShellAtPath(projectPath string) error {
 	return cmd.Run()
 }
 
+func configToFile(cfg launcherConfig) launcherConfigFile {
+	return launcherConfigFile{
+		TerminalCmd:        cfg.TerminalCmd,
+		TerminalArgs:       append([]string{}, cfg.TerminalArgs...),
+		WSLEntryCmd:        cfg.WSLEntryCmd,
+		WSLShell:           cfg.WSLShell,
+		HostShellCmd:       cfg.HostShellCmd,
+		HostShellArgs:      append([]string{}, cfg.HostShellArgs...),
+		RestoreCmdClaude:   cfg.RestoreCmdClaude,
+		RestoreCmdOpenCode: cfg.RestoreCmdOpenCode,
+		RestoreCmdQwen:     cfg.RestoreCmdQwen,
+		RestoreCmdCodex:    cfg.RestoreCmdCodex,
+	}
+}
+
+func parseCLIArgs(args []string) (cliOptions, error) {
+	opts := cliOptions{}
+	for _, arg := range args {
+		switch arg {
+		case "--doctor":
+			opts.doctor = true
+		case "--json":
+			opts.doctorJSON = true
+		case "--print-effective-config":
+			opts.printEffectiveConfig = true
+		case "--init-config":
+			opts.initConfig = true
+		case "--write":
+			opts.write = true
+		case "--force":
+			opts.force = true
+		default:
+			return opts, fmt.Errorf("unknown option: %s", arg)
+		}
+	}
+
+	if opts.doctorJSON && !opts.doctor {
+		return opts, fmt.Errorf("--json requires --doctor")
+	}
+	if opts.write && !opts.initConfig {
+		return opts, fmt.Errorf("--write requires --init-config")
+	}
+	if opts.force && !opts.write {
+		return opts, fmt.Errorf("--force requires --write")
+	}
+
+	modeCount := 0
+	if opts.doctor {
+		modeCount++
+	}
+	if opts.printEffectiveConfig {
+		modeCount++
+	}
+	if opts.initConfig {
+		modeCount++
+	}
+	if modeCount > 1 {
+		return opts, fmt.Errorf("choose only one mode: --doctor, --print-effective-config, or --init-config")
+	}
+	return opts, nil
+}
+
 func commandFromTemplate(template string) string {
 	expanded := strings.ReplaceAll(template, "{id}", "x")
 	expanded = strings.ReplaceAll(expanded, "{project}", "x")
@@ -1264,63 +1560,255 @@ func windowsSystemBinary(name string) (string, error) {
 	return "", fmt.Errorf("%s not found in /mnt/c/Windows/System32", name)
 }
 
-func runDoctor() int {
+func printJSON(v any) int {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to encode JSON: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runPrintEffectiveConfig() int {
+	out := map[string]any{
+		"schema_version": "effective-config.v1",
+		"path":           launcherCfgPath,
+		"loaded":         launcherCfgLoaded,
+		"warning":        launcherCfgWarning,
+		"sources":        launcherCfgSources,
+		"config":         configToFile(launcherCfg),
+	}
+	return printJSON(out)
+}
+
+func runInitConfig(write, force bool) int {
+	targetPath := launcherConfigPath()
+	if targetPath == "" {
+		fmt.Fprintln(os.Stderr, "unable to determine config path; set ASM_CONFIG_PATH")
+		return 1
+	}
+
+	template := configToFile(defaultLauncherConfig())
+	raw, err := json.MarshalIndent(template, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to generate config template: %v\n", err)
+		return 1
+	}
+
+	if !write {
+		fmt.Printf("init-config dry-run\npath: %s\n\n%s\n", targetPath, string(raw))
+		return 0
+	}
+
+	if _, statErr := os.Stat(targetPath); statErr == nil && !force {
+		fmt.Fprintf(os.Stderr, "config file already exists: %s (use --force to overwrite)\n", targetPath)
+		return 1
+	}
+
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to create config directory: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(targetPath, append(raw, '\n'), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write config file: %v\n", err)
+		return 1
+	}
+	fmt.Printf("wrote config: %s\n", targetPath)
+	return 0
+}
+
+func doctorCheckFromCommand(command string) doctorCheck {
+	if command == "" {
+		return doctorCheck{Status: "missing", Details: "empty command"}
+	}
+	if path, err := commandBinary(command); err == nil {
+		return doctorCheck{Status: "ok", Details: path}
+	}
+	return doctorCheck{Status: "missing", Details: "command not found"}
+}
+
+func buildDoctorReport() doctorReport {
 	cfg := launcherCfg
 	inWSL := os.Getenv("WSL_DISTRO_NAME") != ""
 
+	terminalCheck := doctorCheck{Status: "missing", Details: "not found"}
+	if bin, err := windowsTerminalBinary(cfg); err == nil {
+		terminalCheck = doctorCheck{Status: "ok", Details: bin}
+	}
+
+	interopCheck := doctorCheck{Status: "ok"}
+	if inWSL {
+		if err := ensureWindowsInteropAvailable(); err != nil {
+			interopCheck = doctorCheck{Status: "error", Details: err.Error()}
+		}
+	}
+
+	wslEntryCheck := doctorCheckFromCommand(cfg.WSLEntryCmd)
+	if strings.EqualFold(cfg.WSLEntryCmd, "wsl.exe") && wslEntryCheck.Status == "missing" {
+		if path, err := windowsSystemBinary("wsl.exe"); err == nil {
+			wslEntryCheck = doctorCheck{Status: "ok", Details: path}
+		}
+	}
+	wslShellCheck := doctorCheck{Status: "error", Details: "invalid shell args"}
+	if shellArgs, err := wslShellArgs(cfg); err != nil {
+		wslShellCheck = doctorCheck{Status: "error", Details: err.Error()}
+	} else {
+		wslShellCheck = doctorCheckFromCommand(shellArgs[0])
+	}
+
+	hostShellCheck := doctorCheckFromCommand(cfg.HostShellCmd)
+	tools := map[string]doctorCheck{
+		"claude":   doctorCheckFromCommand(commandFromTemplate(cfg.RestoreCmdClaude)),
+		"opencode": doctorCheckFromCommand(commandFromTemplate(cfg.RestoreCmdOpenCode)),
+		"qwen":     doctorCheckFromCommand(commandFromTemplate(cfg.RestoreCmdQwen)),
+		"codex":    doctorCheckFromCommand(commandFromTemplate(cfg.RestoreCmdCodex)),
+	}
+
+	suggestions := []doctorSuggestion{}
+	if terminalCheck.Status != "ok" {
+		suggestions = append(suggestions, doctorSuggestion{
+			Type:    "set_env",
+			Title:   "set terminal command",
+			Key:     "ASM_TERMINAL_CMD",
+			Value:   cfg.TerminalCmd,
+			Message: "set a terminal executable available in PATH",
+		})
+	}
+	if interopCheck.Status == "error" {
+		suggestions = append(suggestions, doctorSuggestion{
+			Type:    "manual_hint",
+			Title:   "verify WSL interop",
+			Message: "WSL cannot spawn Windows processes in current session",
+		})
+	}
+	for toolName, check := range tools {
+		if check.Status != "ok" {
+			key := "ASM_RESTORE_CMD_" + strings.ToUpper(toolName)
+			suggestions = append(suggestions, doctorSuggestion{
+				Type:    "set_env",
+				Title:   "override restore command for " + toolName,
+				Key:     key,
+				Value:   fmt.Sprintf("%s -r {id}", toolName),
+				Message: "set to a command available in your shell",
+			})
+		}
+	}
+
+	return doctorReport{
+		SchemaVersion: "doctor.v1",
+		Platform: map[string]any{
+			"goos":       runtime.GOOS,
+			"is_wsl":     inWSL,
+			"shell":      os.Getenv("SHELL"),
+			"wsl_distro": os.Getenv("WSL_DISTRO_NAME"),
+		},
+		Config: map[string]any{
+			"path":      launcherCfgPath,
+			"loaded":    launcherCfgLoaded,
+			"warning":   launcherCfgWarning,
+			"effective": configToFile(cfg),
+			"sources":   launcherCfgSources,
+		},
+		Checks: map[string]any{
+			"terminal_binary": terminalCheck,
+			"windows_interop": interopCheck,
+			"wsl_entry":       wslEntryCheck,
+			"wsl_shell":       wslShellCheck,
+			"host_shell":      hostShellCheck,
+			"tools":           tools,
+		},
+		Suggestions: suggestions,
+	}
+}
+
+func runDoctorText() int {
+	report := buildDoctorReport()
 	fmt.Println("Agent Session Manager Doctor")
 	fmt.Println("============================")
-	fmt.Printf("Environment: WSL=%t\n", inWSL)
+	fmt.Printf("Environment: WSL=%v\n", report.Platform["is_wsl"])
 	fmt.Println()
 	fmt.Println("Active launcher config:")
-	fmt.Printf("  ASM_TERMINAL_CMD=%s\n", cfg.TerminalCmd)
-	fmt.Printf("  ASM_WSL_ENTRY_CMD=%s\n", cfg.WSLEntryCmd)
-	fmt.Printf("  ASM_WSL_SHELL=%s\n", cfg.WSLShell)
-	fmt.Printf("  ASM_RESTORE_CMD_CLAUDE=%s\n", cfg.RestoreCmdClaude)
-	fmt.Printf("  ASM_RESTORE_CMD_OPENCODE=%s\n", cfg.RestoreCmdOpenCode)
-	fmt.Printf("  ASM_RESTORE_CMD_QWEN=%s\n", cfg.RestoreCmdQwen)
-	fmt.Printf("  ASM_RESTORE_CMD_CODEX=%s\n", cfg.RestoreCmdCodex)
+	configMap := report.Config
+	path, _ := configMap["path"].(string)
+	if path != "" {
+		fmt.Printf("  config file=%s\n", path)
+	} else {
+		fmt.Println("  config file=(not found)")
+	}
+	effective, _ := configMap["effective"].(launcherConfigFile)
+	fmt.Printf("  ASM_TERMINAL_CMD=%s\n", effective.TerminalCmd)
+	fmt.Printf("  ASM_TERMINAL_ARGS=%s\n", strings.Join(effective.TerminalArgs, " "))
+	fmt.Printf("  ASM_WSL_ENTRY_CMD=%s\n", effective.WSLEntryCmd)
+	fmt.Printf("  ASM_WSL_SHELL=%s\n", effective.WSLShell)
+	fmt.Printf("  ASM_HOST_SHELL_CMD=%s\n", effective.HostShellCmd)
+	fmt.Printf("  ASM_HOST_SHELL_ARGS=%s\n", strings.Join(effective.HostShellArgs, " "))
+	fmt.Printf("  ASM_RESTORE_CMD_CLAUDE=%s\n", effective.RestoreCmdClaude)
+	fmt.Printf("  ASM_RESTORE_CMD_OPENCODE=%s\n", effective.RestoreCmdOpenCode)
+	fmt.Printf("  ASM_RESTORE_CMD_QWEN=%s\n", effective.RestoreCmdQwen)
+	fmt.Printf("  ASM_RESTORE_CMD_CODEX=%s\n", effective.RestoreCmdCodex)
 	fmt.Println()
 	fmt.Println("Checks:")
-
-	terminalStatus := "missing"
-	if bin, err := windowsTerminalBinary(cfg); err == nil {
-		terminalStatus = "ok (" + bin + ")"
-	}
-	fmt.Printf("  terminal binary: %s\n", terminalStatus)
-
-	if inWSL {
-		interopStatus := "ok"
-		if err := ensureWindowsInteropAvailable(); err != nil {
-			interopStatus = "error (" + err.Error() + ")"
-		}
-		fmt.Printf("  windows interop: %s\n", interopStatus)
-	}
-
-	wslStatus := commandAvailability(cfg.WSLEntryCmd)
-	if strings.EqualFold(cfg.WSLEntryCmd, "wsl.exe") && wslStatus == "missing" {
-		if path, err := windowsSystemBinary("wsl.exe"); err == nil {
-			wslStatus = "ok (" + path + ")"
+	checks := report.Checks
+	printCheck := func(name string, check doctorCheck) {
+		if check.Details != "" {
+			fmt.Printf("  %s: %s (%s)\n", name, check.Status, check.Details)
+		} else {
+			fmt.Printf("  %s: %s\n", name, check.Status)
 		}
 	}
-	fmt.Printf("  wsl entry command: %s\n", wslStatus)
-	if shellArgs, err := wslShellArgs(cfg); err != nil {
-		fmt.Printf("  wsl shell command: error (%s)\n", err.Error())
-	} else {
-		fmt.Printf("  wsl shell command: %s\n", commandAvailability(shellArgs[0]))
-	}
-	fmt.Printf("  claude command: %s\n", commandAvailability(commandFromTemplate(cfg.RestoreCmdClaude)))
-	fmt.Printf("  opencode command: %s\n", commandAvailability(commandFromTemplate(cfg.RestoreCmdOpenCode)))
-	fmt.Printf("  qwen command: %s\n", commandAvailability(commandFromTemplate(cfg.RestoreCmdQwen)))
-	fmt.Printf("  codex command: %s\n", commandAvailability(commandFromTemplate(cfg.RestoreCmdCodex)))
+	printCheck("terminal binary", checks["terminal_binary"].(doctorCheck))
+	printCheck("windows interop", checks["windows_interop"].(doctorCheck))
+	printCheck("wsl entry command", checks["wsl_entry"].(doctorCheck))
+	printCheck("wsl shell command", checks["wsl_shell"].(doctorCheck))
+	printCheck("host shell command", checks["host_shell"].(doctorCheck))
+	tools := checks["tools"].(map[string]doctorCheck)
+	printCheck("claude command", tools["claude"])
+	printCheck("opencode command", tools["opencode"])
+	printCheck("qwen command", tools["qwen"])
+	printCheck("codex command", tools["codex"])
 	fmt.Println()
 	fmt.Println("Tip: export ASM_* vars in your shell profile to customize launcher behavior.")
 	return 0
 }
 
+func runDoctorJSON() int {
+	return printJSON(buildDoctorReport())
+}
+
+func initLauncherConfig() {
+	cfg, sources, path, warning, loaded := loadLauncherConfig()
+	launcherCfg = cfg
+	launcherCfgSources = sources
+	launcherCfgPath = path
+	launcherCfgWarning = warning
+	launcherCfgLoaded = loaded
+}
+
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--doctor" {
-		os.Exit(runDoctor())
+	opts, parseErr := parseCLIArgs(os.Args[1:])
+	if parseErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", parseErr)
+		os.Exit(2)
+	}
+
+	initLauncherConfig()
+
+	if launcherCfgWarning != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", launcherCfgWarning)
+	}
+
+	if opts.doctor {
+		if opts.doctorJSON {
+			os.Exit(runDoctorJSON())
+		}
+		os.Exit(runDoctorText())
+	}
+	if opts.printEffectiveConfig {
+		os.Exit(runPrintEffectiveConfig())
+	}
+	if opts.initConfig {
+		os.Exit(runInitConfig(opts.write, opts.force))
 	}
 
 	hiddenManager, err := hidden.NewManager("agent-session-manager")
