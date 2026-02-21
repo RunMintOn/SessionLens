@@ -30,8 +30,17 @@ This release is optimized for WSL-first workflows. The session restore path is:
 
 Install once, run anywhere (GitHub source):
 
+Stable release (recommended):
+
 ```bash
 npm i -g github:RunMintOn/SessionLens#v0.1.0
+agent-manager
+```
+
+Latest main branch (bleeding edge, may be unstable):
+
+```bash
+npm i -g github:RunMintOn/SessionLens#main
 agent-manager
 ```
 
