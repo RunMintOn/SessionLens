@@ -56,10 +56,13 @@ var (
 	qwenColor     = lipgloss.Color("#93C5FD")
 	codexColor    = lipgloss.Color("#FCA5A5")
 
-	bgColor       = lipgloss.Color("#1E1E1E")
-	borderColor   = lipgloss.Color("#3C3C3C")
-	textColor     = lipgloss.Color("#FAFAFA")
-	selectedColor = lipgloss.Color("#569CD6")
+	bgColor             = lipgloss.Color("#1E1E1E")
+	borderColor         = lipgloss.Color("#3C3C3C")
+	textColor           = lipgloss.Color("#FAFAFA")
+	selectedColor       = lipgloss.Color("#569CD6")
+	leftMutedColor      = lipgloss.Color("#94A3B8")
+	leftCardColor       = lipgloss.Color("#20262D")
+	leftCardBorderColor = lipgloss.Color("#2F3944")
 )
 
 var (
@@ -105,7 +108,13 @@ var (
 				Padding(0, 1)
 )
 
-const projectConfirmWindow = 2 * time.Second
+const (
+	projectConfirmWindow = 2 * time.Second
+	leftPanelRatio       = 0.40
+	leftPanelMinWidth    = 28
+	rightPanelMinWidth   = 30
+	projectCardRowHeight = 3 // title + meta + spacer
+)
 
 type rowKind int
 
@@ -814,6 +823,45 @@ func getVisibleWindow(total, cursor, maxRows int) (int, int) {
 	return start, end
 }
 
+func renderProjectCard(path string, sessionCount, innerWidth int, isSelected, isFocused bool) string {
+	if innerWidth < 8 {
+		return ""
+	}
+
+	pathText := simplifyPath(path)
+	titlePrefix := "  "
+	if isSelected && isFocused {
+		titlePrefix = "> "
+	} else if isSelected {
+		titlePrefix = "▸ "
+	}
+
+	titleWidth := innerWidth - 4
+	if titleWidth < 4 {
+		titleWidth = 4
+	}
+	title := truncateRunesNoEllipsis(titlePrefix+pathText, titleWidth)
+	meta := truncateRunesNoEllipsis(fmt.Sprintf("  %d sessions", sessionCount), titleWidth)
+
+	content := title + "\n" + lipgloss.NewStyle().Foreground(leftMutedColor).Render(meta)
+
+	base := lipgloss.NewStyle().
+		Width(innerWidth).
+		Padding(0, 1).
+		Foreground(textColor).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(leftCardBorderColor).
+		Background(leftCardColor)
+
+	if isSelected && isFocused {
+		base = base.BorderForeground(selectedColor).Background(lipgloss.Color("#253343"))
+	} else if isSelected {
+		base = base.BorderForeground(openCodeColor).Background(lipgloss.Color("#222C35"))
+	}
+
+	return base.Render(content)
+}
+
 func (m model) View() string {
 	width := m.width
 	height := m.height
@@ -864,13 +912,29 @@ func (m model) View() string {
 	}
 
 	// Split width into left and right panels
-	leftPanelWidth := width / 3
+	leftPanelWidth := int(float64(width) * leftPanelRatio)
+	if leftPanelWidth < leftPanelMinWidth {
+		leftPanelWidth = leftPanelMinWidth
+	}
+	maxLeftWidth := width - rightPanelMinWidth - 1
+	if maxLeftWidth < 20 {
+		maxLeftWidth = 20
+	}
+	if leftPanelWidth > maxLeftWidth {
+		leftPanelWidth = maxLeftWidth
+	}
+
+	rightPanelWidth := width - leftPanelWidth - 1 // -1 for separator
+	if rightPanelWidth < rightPanelMinWidth {
+		rightPanelWidth = rightPanelMinWidth
+		leftPanelWidth = width - rightPanelWidth - 1
+	}
 	if leftPanelWidth < 20 {
 		leftPanelWidth = 20
+		rightPanelWidth = width - leftPanelWidth - 1
 	}
-	rightPanelWidth := width - leftPanelWidth - 1 // -1 for separator
-	if rightPanelWidth < 30 {
-		rightPanelWidth = 30
+	if rightPanelWidth < 20 {
+		rightPanelWidth = 20
 	}
 
 	leftInnerWidth := leftPanelWidth - panelStyle.GetHorizontalFrameSize()
@@ -879,47 +943,36 @@ func (m model) View() string {
 	// Build left panel (projects)
 	grouped := m.getGroupedProjects()
 	var leftBody strings.Builder
-	leftBody.WriteString(fmt.Sprintf("Projects (%d)\n\n", len(grouped)))
+	leftBody.WriteString(
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E2E8F0")).Render("PROJECTS") + "\n",
+	)
+	leftBody.WriteString(
+		lipgloss.NewStyle().Foreground(leftMutedColor).Render(fmt.Sprintf("%d total", len(grouped))) + "\n\n",
+	)
 
-	leftVisibleRows := contentHeight - 3
-	if leftVisibleRows < 1 {
-		leftVisibleRows = 1
+	leftHeaderHeight := 3
+	leftVisibleCards := (contentHeight - leftHeaderHeight) / projectCardRowHeight
+	if leftVisibleCards < 1 {
+		leftVisibleCards = 1
 	}
-	leftStart, leftEnd := getVisibleWindow(len(grouped), m.projectCursor, leftVisibleRows)
+	leftStart, leftEnd := getVisibleWindow(len(grouped), m.projectCursor, leftVisibleCards)
+	if leftStart > 0 {
+		leftBody.WriteString(lipgloss.NewStyle().Foreground(leftMutedColor).Render("  ↑ more") + "\n")
+	}
 
 	for i := leftStart; i < leftEnd; i++ {
 		group := grouped[i]
 		isSelected := i == m.projectCursor
 		isFocused := m.focusPanel == focusLeft
-
-		pathText := truncateRunesNoEllipsis(simplifyPath(group.projectPath), leftInnerWidth-2)
-		sessionCount := fmt.Sprintf(" (%d)", len(group.sessions))
-		countWidth := runewidth.StringWidth(sessionCount)
-		maxPath := leftInnerWidth - countWidth - 2
-		if maxPath < 5 {
-			maxPath = 5
-		}
-		pathText = truncateRunesNoEllipsis(pathText, maxPath)
-		line := "  " + pathText + sessionCount
-
-		if isSelected {
-			if isFocused {
-				line = "> " + pathText + sessionCount
-				line = padRightWidth(truncateRunesNoEllipsis(line, leftInnerWidth), leftInnerWidth)
-				leftBody.WriteString(selectedStyle.Render(line) + "\n")
-			} else {
-				line = "▸ " + pathText + sessionCount
-				line = padRightWidth(truncateRunesNoEllipsis(line, leftInnerWidth), leftInnerWidth)
-				leftBody.WriteString(projectStyle.Render(line) + "\n")
-			}
-		} else {
-			line = padRightWidth(truncateRunesNoEllipsis(line, leftInnerWidth), leftInnerWidth)
-			leftBody.WriteString(itemStyle.Render(line) + "\n")
-		}
+		leftBody.WriteString(renderProjectCard(group.projectPath, len(group.sessions), leftInnerWidth, isSelected, isFocused))
+		leftBody.WriteString("\n\n")
 	}
 
 	if len(grouped) == 0 {
-		leftBody.WriteString("  (no projects)\n")
+		leftBody.WriteString(lipgloss.NewStyle().Foreground(leftMutedColor).Render("  (no projects)") + "\n")
+	}
+	if leftEnd < len(grouped) {
+		leftBody.WriteString(lipgloss.NewStyle().Foreground(leftMutedColor).Render("  ↓ more") + "\n")
 	}
 
 	leftPanel := panelStyle.Width(leftPanelWidth).Height(contentHeight).Render(leftBody.String())
