@@ -217,6 +217,45 @@ func TestScanAll_DifferentSourcesNotDuplicates(t *testing.T) {
 	}
 }
 
+// TestScanAll_CodexSourceIncluded tests that codex sessions are kept and grouped.
+func TestScanAll_CodexSourceIncluded(t *testing.T) {
+	originalScanners := scannersForTest
+	defer func() { scannersForTest = originalScanners }()
+
+	scannersForTest = []struct {
+		name    string
+		scanner Scanner
+	}{
+		{"mock-codex", &mockScanner{
+			sessions: []Session{
+				{ID: "c1", Title: "Codex Session", SourceTool: SourceCodex, ProjectPath: "/path/c", LastUpdated: 300},
+			},
+		}},
+		{"mock-opencode", &mockScanner{
+			sessions: []Session{
+				{ID: "o1", Title: "OpenCode Session", SourceTool: SourceOpenCode, ProjectPath: "/path/o", LastUpdated: 200},
+			},
+		}},
+	}
+
+	projects, err := scan_all()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var foundCodex bool
+	for _, p := range projects {
+		for _, s := range p.Sessions {
+			if s.SourceTool == SourceCodex && s.ID == "c1" {
+				foundCodex = true
+			}
+		}
+	}
+	if !foundCodex {
+		t.Fatal("expected codex session to be included in scan_all result")
+	}
+}
+
 // TestScanAll_EmptyResults tests that empty scanner results work correctly
 func TestScanAll_EmptyResults(t *testing.T) {
 	originalScanners := scannersForTest

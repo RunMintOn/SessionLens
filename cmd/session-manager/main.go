@@ -21,6 +21,7 @@ var (
 	openCodeColor = lipgloss.Color("#86EFAC")
 	claudeColor   = lipgloss.Color("#FDBA74")
 	qwenColor     = lipgloss.Color("#93C5FD")
+	codexColor    = lipgloss.Color("#FCA5A5")
 
 	bgColor       = lipgloss.Color("#1E1E1E")
 	borderColor   = lipgloss.Color("#3C3C3C")
@@ -102,7 +103,7 @@ type model struct {
 	hiddenManager     *hidden.Manager
 	showHiddenOverlay bool
 	hiddenCursor      int
-	sourceFilter      string // "", "opencode", "claude", "qwen"
+	sourceFilter      string // "", "opencode", "claude", "qwen", "codex"
 
 	confirmProjectPath string
 	confirmExpiresAt   time.Time
@@ -340,6 +341,8 @@ func launchSession(sess session.Session) {
 		restoreCmd = exec.Command("opencode", "-s", sess.ID)
 	case session.SourceQwen:
 		restoreCmd = exec.Command("qwen", "-r", sess.ID)
+	case session.SourceCodex:
+		restoreCmd = exec.Command("codex", "resume", sess.ID)
 	default:
 		return
 	}
@@ -485,6 +488,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "4":
 			m.sourceFilter = "qwen"
+			m.projectCursor = 0
+			m.sessionCursor = 0
+			m.clearProjectConfirm()
+			return m, nil
+		case "5":
+			m.sourceFilter = "codex"
 			m.projectCursor = 0
 			m.sessionCursor = 0
 			m.clearProjectConfirm()
@@ -643,7 +652,7 @@ func (m model) View() string {
 		m.renderFilterRow(),
 	}, "\n")
 
-	footerText := "←/→ switch  ↑/k move  ↓/j move  Enter open  / search  q quit  1-4 filter  h hide  H hidden"
+	footerText := "←/→ switch  ↑/k move  ↓/j move  Enter open  / search  q quit  1-5 filter  h hide  H hidden"
 	if m.searchActive {
 		footerText = "SEARCH INPUT  |  type to search  |  Esc clear & exit search"
 	} else if m.query != "" {
@@ -789,6 +798,8 @@ func (m model) View() string {
 			badgeStyle = lipgloss.NewStyle().Foreground(claudeColor).Faint(true)
 		case session.SourceQwen:
 			badgeStyle = lipgloss.NewStyle().Foreground(qwenColor).Faint(true)
+		case session.SourceCodex:
+			badgeStyle = lipgloss.NewStyle().Foreground(codexColor).Faint(true)
 		}
 		badge := badgeStyle.Render(badgePlain)
 
@@ -879,6 +890,7 @@ func (m model) renderFilterRow() string {
 		{"2", "claude", "Claude", claudeColor},
 		{"3", "opencode", "OpenCode", openCodeColor},
 		{"4", "qwen", "Qwen", qwenColor},
+		{"5", "codex", "Codex", codexColor},
 	}
 
 	var buttons []string
@@ -907,6 +919,7 @@ func collectSessions() []session.Session {
 		{"OpenCode", session.NewOpenCodeScanner()},
 		{"Claude", session.NewClaudeScanner()},
 		{"Qwen", session.NewQwenScanner()},
+		{"Codex", session.NewCodexScanner()},
 	}
 
 	for _, s := range scanners {

@@ -19,6 +19,7 @@ var scannersForTest = []struct {
 	{"OpenCode", NewOpenCodeScanner()},
 	{"Claude", NewClaudeScanner()},
 	{"Qwen", NewQwenScanner()},
+	{"Codex", NewCodexScanner()},
 }
 
 // scan_all scans all sessions from all scanners and groups them by project path.

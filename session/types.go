@@ -7,6 +7,7 @@ const (
 	SourceOpenCode SourceType = "opencode"
 	SourceClaude   SourceType = "claude"
 	SourceQwen     SourceType = "qwen"
+	SourceCodex    SourceType = "codex"
 )
 
 // Session represents an agent session.
